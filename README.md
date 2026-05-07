@@ -219,6 +219,10 @@ curl -L -o cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/downl
 
 asdnnj32nsd@foxmail.com 需要进群把微信号发到这个邮箱，拉你进群（群已满200，只能拉人进群）
 
+## 代码审计培训推荐(备注申请：弱鸡推荐)
+
+![代码审计培训推荐](assets/WechatIMG3380.jpg)
+
 ## 相关链接
 
 - [CFR Decompiler](https://github.com/leibnitz27/cfr) - Java 反编译器
