@@ -2,6 +2,10 @@
 
 - [net-audit-skills](https://github.com/RuoJi6/net-audit-skills) - .NET / ASP.NET 代码审计 Claude Skills 集合
 
+## 推荐阅读
+
+- [Skill 约束悖论](https://ruoji6.github.io/posts/14856.html) - 理解 skill 在 AI 代码审计中的能力边界，以及全量自主审计与自主式深度推理的配合方式
+
 # Java Audit Skills
 
 专注于 Java 代码审计的 Claude Skills 集合，提供自动化源码分析、路由提取、参数映射等功能，辅助安全研究人员和开发者进行 Java Web 应用的安全审计工作。
