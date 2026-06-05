@@ -72,6 +72,63 @@ public class WebConfig implements WebMvcConfigurer {
 - 检查 `addViewControllers` 方法中的直接路由映射
 - 检查 `addResourceHandlers` 中的静态资源路径
 
+### configurePathMatch 路由前缀
+
+`WebMvcConfigurer#configurePathMatch` 可以为一批 Controller 动态添加统一前缀。该配置会改变最终对外 URL，必须在扫描 Controller 注解前先提取并应用。
+
+```java
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+    @Override
+    public void configurePathMatch(PathMatchConfigurer configurer) {
+        configurer.addPathPrefix("/admin",
+            c -> c.isAnnotationPresent(AdminController.class));
+    }
+}
+
+@AdminController
+@RestController
+@RequestMapping("/users")
+public class UserController {
+    @GetMapping("/{id}")
+    public User get(@PathVariable Long id) { return null; }
+}
+```
+
+**路径组合规则：**
+
+```
+完整路径 = context-path + addPathPrefix 前缀 + 类级别路径 + 方法级别路径
+例：/api + /admin + /users + /{id} = /api/admin/users/{id}
+```
+
+**提取要点：**
+- 搜索 `configurePathMatch`、`PathMatchConfigurer`、`addPathPrefix`
+- 记录每个 `addPathPrefix(prefix, predicate)` 的 `prefix`、匹配条件、配置文件位置
+- 匹配条件常见形式：
+  - `c -> c.isAnnotationPresent(AdminController.class)`
+  - `HandlerTypePredicate.forAnnotation(AdminController.class)`
+  - `HandlerTypePredicate.forBasePackage("com.example.admin")`
+  - `HandlerTypePredicate.forAssignableType(AdminController.class)`
+- 将匹配条件应用到所有 `@Controller` / `@RestController` 类
+- 同一个 Controller 命中多个前缀时，分别输出对应完整路径，并标注前缀来源
+- 若匹配条件无法静态判定，必须在报告中记录为“需人工确认”，不能直接忽略
+
+**输出要求：**
+
+```markdown
+=== [1] GET /api/admin/users/{id} ===
+位置: UserController.get (UserController.java:12)
+HTTP 方法: GET
+URL 路径: /api/admin/users/{id}
+Spring MVC 路径前缀: /admin
+前缀来源: WebConfig.configurePathMatch (WebConfig.java:5)
+匹配条件: c.isAnnotationPresent(AdminController.class)
+
+参数结构:
+  Path: {id} (Long)
+```
+
 ---
 
 ## 路由注解
