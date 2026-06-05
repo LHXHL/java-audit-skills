@@ -326,6 +326,53 @@ SecurityFilterChain: /api/admin/** = hasRole('ADMIN')
 
 ---
 
+## java-deserialization-audit
+
+**Java Web 源码反序列化漏洞审计工具**
+
+适用场景：
+- 审计 `DESERIALIZE` sink 是否可由用户输入触达
+- 分析 ObjectInputStream、XMLDecoder、Fastjson、XStream、JDBC、Shiro RememberMe、Log4j/JNDI 等反序列化风险
+- 结合组件版本、JDK 版本、gadget 条件判断可利用性
+- 输出安全验证思路、Burp 请求和 payload
+
+**支持类型：**
+- 原生 Java 反序列化：ObjectInputStream / readObject / readExternal
+- XMLDecoder
+- Fastjson
+- XStream
+- JDBC URL / DataSource 反序列化与 JNDI 类风险
+- Shiro RememberMe
+- Log4j/JNDI
+- CommonsCollections / ysoserial gadget 链
+
+**核心功能：**
+1. 优先读取 route_mapper、route_tracer、vuln_report、cross_analysis 的前序输出
+2. 根据 `DESERIALIZE` sink 或反序列化组件命中按需审计
+3. 分析入口可达性、用户可控性、组件/JDK/gadget 条件和分支条件
+4. 为风险点提供 Burp 请求、payload 和修复建议
+5. 支持 .class 和 .jar 文件的反编译分析
+
+**使用示例：**
+
+```
+输入: 项目源码路径
+输出: 反序列化漏洞审计报告
+
+=== 反序列化 Sink 映射表 ===
+| 序号 | 类名 | 方法 | Sink 类型 | 输入来源 | 组件/版本条件 | 可控性 | 可利用性 |
+|------|------|------|-----------|----------|---------------|--------|----------|
+| 1 | ImportController | importConfig | XMLDecoder | HTTP Body | JDK 内置 | ✅ 完全可控 | ✅ 已确认 |
+
+=== 高危风险详情 ===
+🔴 [C-DESER-001] XMLDecoder 反序列化漏洞
+位置: ImportController.java:45
+说明: 用户可控 XML 直接进入 XMLDecoder.readObject()
+验证: 使用低破坏命令或 DNS OOB payload 确认触发
+```
+
+---
+
 ## java-vuln-scanner
 
 **Java 组件版本漏洞检测工具**
@@ -434,7 +481,8 @@ SecurityFilterChain: /api/admin/** = hasRole('ADMIN')
   ├─ agent-6a-sql-auditor: /java-sql-audit         → SQL注入分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
   ├─ agent-6b-xxe-auditor: /java-xxe-audit         → XXE注入分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
   ├─ agent-6c-upload-auditor: /java-file-upload-audit  → 文件上传分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-  └─ agent-6d-fileread-auditor: /java-file-read-audit   → 文件读取分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
+  ├─ agent-6d-fileread-auditor: /java-file-read-audit   → 文件读取分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
+  └─ agent-6e-deserialization-auditor: /java-deserialization-audit → 反序列化分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
         ↓
 阶段5: 汇总报告
   └─ agent-7-quality-checker: 整合所有校验结果，生成最终 quality_report.md → 完成后关闭
@@ -464,6 +512,7 @@ SecurityFilterChain: /api/admin/** = hasRole('ADMIN')
 ├── file_upload_audit/         # java-file-upload-audit 输出
 ├── file_read_audit/           # java-file-read-audit 输出
 ├── xxe_audit/                 # java-xxe-audit 输出
+├── deserialization_audit/     # java-deserialization-audit 输出
 ├── vuln_report/               # java-vuln-scanner 输出
 ├── cross_analysis/            # java-audit-pipeline 交叉分析结果
 │   ├── high_risk_routes.md              # agent-4a 输出

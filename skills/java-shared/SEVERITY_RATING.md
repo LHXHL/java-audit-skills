@@ -78,6 +78,7 @@ CVSS 映射 = Score / 3.0 × 10.0
 | `UPLOAD` | java-file-upload-audit | 文件上传 |
 | `FILE` | java-file-read-audit | 任意文件读取 |
 | `AUTH` | java-auth-audit | 鉴权绕过 / 越权 |
+| `DESER` | java-deserialization-audit | 反序列化 |
 
 ---
 

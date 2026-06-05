@@ -217,9 +217,9 @@
 
 ### agent-6x 漏洞审计通用校验清单
 
-适用于 agent-6a（SQL）、agent-6b（XXE）、agent-6c（文件上传）、agent-6d（文件读取）。
+适用于 agent-6a（SQL）、agent-6b（XXE）、agent-6c（文件上传）、agent-6d（文件读取）、agent-6e（反序列化）。
 
-校验前先使用 Skill 工具加载对应 skill（`/java-sql-audit`、`/java-xxe-audit`、`/java-file-upload-audit`、`/java-file-read-audit`），从 skill 上下文中提取输出规范。
+校验前先使用 Skill 工具加载对应 skill（`/java-sql-audit`、`/java-xxe-audit`、`/java-file-upload-audit`、`/java-file-read-audit`、`/java-deserialization-audit`），从 skill 上下文中提取输出规范。
 
 | # | 校验项 | 预期 | 实际 | 状态 |
 |---|--------|------|------|------|
@@ -232,6 +232,7 @@
 | 4c | - 其他前置条件 | 特殊配置、环境依赖等 | {填写：具体内容} | {✅/❌} |
 | 4d | - 综合可利用性判定 | 明确结论：可直接利用 / 需满足条件后可利用 / 不可利用 | {填写：判定结论} | {✅/❌} |
 | 5 | 输出模板合规性 | 报告结构符合对应 skill 的 OUTPUT_TEMPLATE.md，无残留【填写】占位符 | {填写：章节是否齐全} | {✅/❌} |
+| 6 | 反序列化专项校验（仅 agent-6e） | 组件版本命中未被直接判漏洞；每个漏洞含组件/JDK/gadget/网络条件、Burp 请求和 payload；安全 sink 已摘要说明 | {填写：不适用或具体检查结果} | {✅/❌/-} |
 
 **覆盖率校验（全部 agent-6x 通过后由负责人汇总）：**
 
@@ -280,6 +281,7 @@
 - {✅/❌→✅} java-xxe-audit: {M}/{N} 项通过（含可利用前置条件）
 - {✅/❌→✅} java-file-upload-audit: {M}/{N} 项通过（含可利用前置条件）
 - {✅/❌→✅} java-file-read-audit: {M}/{N} 项通过（含可利用前置条件）
+- {✅/❌→✅} java-deserialization-audit: {M}/{N} 项通过（含可利用前置条件、组件/JDK/gadget 条件和 payload）
 
 ## 数据一致性
 | 校验项 | 实际值 | 阈值 | 状态 |

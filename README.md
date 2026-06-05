@@ -24,6 +24,7 @@
 - **文件上传审计**：识别文件上传入口，分析路径穿越和可执行文件上传风险
 - **文件读取审计**：识别文件读取操作，分析路径遍历攻击风险
 - **XXE 审计**：识别 XML 解析操作，检测外部实体注入漏洞风险
+- **反序列化审计**：识别 ObjectInputStream、XMLDecoder、Fastjson、XStream、JDBC、Shiro、Log4j/JNDI 等反序列化风险并验证可利用前置条件
 - **组件漏洞检测**：扫描第三方依赖，匹配 130+ 条 CVE 规则，生成安全报告
 - **全链路审计流水线**：使用 agent team 编排多个审计 skill（含动态扩展的调用链追踪 worker），一键完成完整安全审计
 
@@ -51,6 +52,7 @@ java-audit-skills/
     ├── java-file-upload-audit/ # Java 文件上传漏洞审计工具
     ├── java-file-read-audit/   # Java 文件读取漏洞审计工具
     ├── java-xxe-audit/        # Java XXE 漏洞审计工具
+    ├── java-deserialization-audit/ # Java 反序列化漏洞审计工具
     ├── java-vuln-scanner/     # Java 组件版本漏洞检测工具
     └── java-audit-pipeline/   # Java 全链路自动化安全审计流水线
 ```
@@ -66,6 +68,7 @@ java-audit-skills/
 | java-file-upload-audit | Java Web 源码文件上传漏洞审计工具     |
 | java-file-read-audit   | Java Web 源码文件读取漏洞审计工具     |
 | java-xxe-audit      | Java Web 源码 XXE 漏洞审计工具         |
+| java-deserialization-audit | Java Web 源码反序列化漏洞审计工具 |
 | java-vuln-scanner   | Java 组件版本漏洞检测工具               |
 | java-audit-pipeline | Java 全链路自动化安全审计流水线（需开启 agent teams） |
 
@@ -151,11 +154,11 @@ curl -L -o cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/downl
                   quality-checker 校验，通过后关闭
                         ↓
 阶段4: 漏洞深度分析（按需并行）
-┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-│ sql-auditor      │ │ xxe-auditor      │ │ upload-auditor   │ │ fileread-auditor │
-│ SQL注入+前置条件 │ │ XXE注入+前置条件 │ │ 文件上传+前置条件│ │ 文件读取+前置条件│
-└────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
-         └──────────────┬─────┴──────────────┬─────┘──────────────┘
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│ sql-auditor      │ │ xxe-auditor      │ │ upload-auditor   │ │ fileread-auditor │ │ deser-auditor    │
+│ SQL注入+前置条件 │ │ XXE注入+前置条件 │ │ 文件上传+前置条件│ │ 文件读取+前置条件│ │ 反序列化+前置条件│
+└────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
+         └──────────────┬─────┴──────────────┬─────┴──────────────┬─────┘
                   仅启动有对应 sink 的 agent，quality-checker 分别校验，通过后关闭
 阶段5: 汇总报告
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -176,6 +179,7 @@ curl -L -o cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/downl
                 ├── xxe_audit/
                 ├── file_upload_audit/
                 ├── file_read_audit/
+                ├── deserialization_audit/
                 ├── decompiled/
                 └── quality_report.md
 ```
@@ -196,6 +200,7 @@ curl -L -o cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/downl
 /java-file-upload-audit /path/to/project
 /java-file-read-audit /path/to/project
 /java-xxe-audit /path/to/project
+/java-deserialization-audit /path/to/project
 /java-vuln-scanner /path/to/project
 ```
 
