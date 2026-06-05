@@ -87,7 +87,7 @@ Gadget 风险不能只看依赖。至少确认：
 
 `{project_name}_deserialization_audit_{YYYYMMDD_HHMMSS}.md`
 
-漏洞编号格式：`{C/H/M/L}-DESER-{序号}`。报告模板见 [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md)。
+漏洞编号格式：`{C/H/M/L}-DESER-{序号}`。报告模板见 [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md)。多入口漏洞按 [VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md) 聚合：同根因多路由合并为一个漏洞编号并列出“受影响入口”，不同鉴权、组件、gadget、payload 或修复条件时拆分。
 
 只完整列出存在风险或不可控但需说明的 sink；安全 sink 在摘要中提及数量和安全原因即可。每个漏洞必须包含可利用前置条件、Burp 请求、payload 和修复建议。
 

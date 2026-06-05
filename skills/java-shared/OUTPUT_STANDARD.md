@@ -100,7 +100,9 @@
 
 ## 3. 通用报告骨架
 
-以下是所有**漏洞审计类** Skill（sql-audit、auth-audit、xxe-audit、file-upload-audit、file-read-audit）的通用报告骨架。每个 Skill 的 OUTPUT_TEMPLATE.md 在此基础上扩展。
+以下是所有**漏洞审计类** Skill（sql-audit、auth-audit、xxe-audit、file-upload-audit、file-read-audit、deserialization-audit）的通用报告骨架。每个 Skill 的 OUTPUT_TEMPLATE.md 在此基础上扩展。
+
+所有漏洞审计类 skill 必须遵守 [VULNERABILITY_GROUPING.md](VULNERABILITY_GROUPING.md)：同根因多入口合并为一个漏洞编号，并在漏洞详情中列出“受影响入口”；不同鉴权、组件条件、sink 类型、payload 条件或修复点时拆分为多个漏洞编号。
 
 ### 3.1 报告头部（必需）
 
@@ -150,6 +152,12 @@
 | 利用复杂度 (C) | 【填写：0-3 + 判定理由】 |
 | 可利用性 | 【填写：✅ 已确认 / ⚠️ 待验证 / ❌ 不可利用 / 🔍 环境依赖】 |
 | 位置 | 【填写：ClassName.method (file:line)】 |
+
+#### 受影响入口
+
+| 序号 | 路由/入口 | HTTP 方法 | 入口方法 | 参数 | 调用链 | 鉴权 | 可控性 | 备注 |
+|------|-----------|-----------|----------|------|--------|------|--------|------|
+| 【填写】 | 【填写】 | 【填写】 | 【填写】 | 【填写】 | 【填写：入口 -> sink】 | 【填写】 | 【填写：✅ 完全可控 / ⚠️ 条件可控 / ❌ 不可控】 | 【填写】 |
 <!-- 重复区块结束 -->
 ```
 
@@ -183,6 +191,7 @@
 - [ ] 所有【填写】占位符已替换为实际内容
 - [ ] 章节数量和顺序与模板一致
 - [ ] 风险统计表有 C/H/M/L 四行
+- [ ] 每个漏洞详情包含“受影响入口”表；同根因多入口已合并，不同条件入口已拆分
 - [ ] 审计结论章节存在且数据与正文一致
 - [ ] （各 Skill 特有检查项）
 ```
@@ -198,6 +207,7 @@
 | java-xxe-audit | `references/OUTPUT_TEMPLATE.md` | 1 个 |
 | java-file-upload-audit | `references/OUTPUT_TEMPLATE.md` | 1 个 |
 | java-file-read-audit | `references/OUTPUT_TEMPLATE.md` | 1 个 |
+| java-deserialization-audit | `references/OUTPUT_TEMPLATE.md` | 1 个 |
 | java-route-mapper | `references/OUTPUT_TEMPLATE_INDEX.md` + `OUTPUT_TEMPLATE_MODULE.md` + `OUTPUT_TEMPLATE_README.md` | N 个（按模块） |
 | java-route-tracer | `references/OUTPUT_TEMPLATE_FULL.md` + `OUTPUT_TEMPLATE_SIMPLE.md` + `OUTPUT_TEMPLATE_INDEX.md` | N 个（按方法） |
 | java-vuln-scanner | `references/OUTPUT_TEMPLATE.md` | 1 个 |

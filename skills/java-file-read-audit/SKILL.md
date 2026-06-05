@@ -393,6 +393,7 @@ grep -r "download\|readFile\|getFile" --include="*.java"
 - 不得修改模板结构、不得增删章节、不得调整顺序
 - 所有【填写】占位符必须替换为实际内容
 - 通用规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
+- 漏洞聚合规则参考: [java-shared/VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md)，同根因多入口合并为一个漏洞编号并列出“受影响入口”，不同条件入口拆分。
 
 ---
 
