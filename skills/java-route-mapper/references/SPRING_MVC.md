@@ -1,410 +1,79 @@
-# Spring MVC 路由分析
+# Spring MVC / Spring Boot 路由参考
 
-## 目录
+只在项目使用 Spring Web 注解、Spring Boot Web、或存在 `WebMvcConfigurer` 路径前缀时读取本文件。
 
-- [项目识别](#项目识别)
-- [配置文件](#配置文件)
-- [路由注解](#路由注解)
-- [参数注解](#参数注解)
-- [路径解析规则](#路径解析规则)
-- [常见模式](#常见模式)
+## URL 组成
 
----
+最终 URL 按以下顺序组合：
 
-## 项目识别
-
-**特征文件：**
-```
-pom.xml - 检查 spring-webmvc、spring-boot-starter-web 依赖
-application.properties / application.yml - Spring Boot 配置
-web.xml - 传统 Spring MVC 配置
-[servlet-name]-servlet.xml - Spring MVC 配置文件
+```text
+context-path + servlet-path + addPathPrefix + class-level mapping + method-level mapping
 ```
 
-**特征注解：**
-```
-@Controller / @RestController
-@Configuration / @SpringBootApplication
-@EnableWebMvc
-```
+来源优先级：
 
----
+| 片段 | 常见来源 |
+|------|----------|
+| context-path | `server.servlet.context-path`, `server.context-path`, WAR context |
+| servlet-path | `spring.mvc.servlet.path`, `DispatcherServlet` registration |
+| addPathPrefix | `WebMvcConfigurer#configurePathMatch` |
+| class mapping | 类上的 `@RequestMapping` 或组合注解 |
+| method mapping | 方法上的 mapping 注解 |
 
-## 配置文件
+## 必查项
 
-### application.properties / application.yml
+- `@Controller`, `@RestController` 类。
+- `@RequestMapping` 及 `@GetMapping` 等组合注解。
+- 自定义组合注解上的 meta-annotation。
+- `WebMvcConfigurer#configurePathMatch` / `PathMatchConfigurer#addPathPrefix`。
+- `WebMvcRegistrations`, `ServletRegistrationBean`, 自定义 `DispatcherServlet`。
+- properties/yml 中的 context path 和 servlet path。
 
-**关键配置：**
+## addPathPrefix 规则
 
-```properties
-# 上下文路径
-server.servlet.context-path=/api
-server.contextPath=/api
+遇到 `addPathPrefix(prefix, predicate)` 时：
 
-# 端口
-server.port=8080
-```
+1. 记录 prefix、predicate、源码位置。
+2. 判断 predicate 匹配哪些 Controller。
+3. 将 prefix 加到匹配 Controller 的最终 URL。
+4. 无法静态判断 predicate 时，在路由详情中标注“前缀需人工确认”，不能静默忽略。
 
-```yaml
-server:
-  servlet:
-    context-path: /api
-  port: 8080
-```
-
-**提取要点：**
-- `context-path` 需要添加到所有路由前缀
-- 默认 context-path 为 `/`
-
-### WebMvcConfigurer 配置
+示例：
 
 ```java
-@Configuration
-public class WebConfig implements WebMvcConfigurer {
-    @Override
-    public void addViewControllers(ViewControllerRegistry registry) {
-        registry.addRedirectViewController("/old", "/new");
-    }
-}
+configurer.addPathPrefix("/admin", c -> c.isAnnotationPresent(AdminController.class));
 ```
 
-**提取要点：**
-- 检查 `addViewControllers` 方法中的直接路由映射
-- 检查 `addResourceHandlers` 中的静态资源路径
-
-### configurePathMatch 路由前缀
-
-`WebMvcConfigurer#configurePathMatch` 可以为一批 Controller 动态添加统一前缀。该配置会改变最终对外 URL，必须在扫描 Controller 注解前先提取并应用。
-
-```java
-@Configuration
-public class WebConfig implements WebMvcConfigurer {
-    @Override
-    public void configurePathMatch(PathMatchConfigurer configurer) {
-        configurer.addPathPrefix("/admin",
-            c -> c.isAnnotationPresent(AdminController.class));
-    }
-}
-
-@AdminController
-@RestController
-@RequestMapping("/users")
-public class UserController {
-    @GetMapping("/{id}")
-    public User get(@PathVariable Long id) { return null; }
-}
-```
-
-**路径组合规则：**
-
-```
-完整路径 = context-path + addPathPrefix 前缀 + 类级别路径 + 方法级别路径
-例：/api + /admin + /users + /{id} = /api/admin/users/{id}
-```
-
-**提取要点：**
-- 搜索 `configurePathMatch`、`PathMatchConfigurer`、`addPathPrefix`
-- 记录每个 `addPathPrefix(prefix, predicate)` 的 `prefix`、匹配条件、配置文件位置
-- 匹配条件常见形式：
-  - `c -> c.isAnnotationPresent(AdminController.class)`
-  - `HandlerTypePredicate.forAnnotation(AdminController.class)`
-  - `HandlerTypePredicate.forBasePackage("com.example.admin")`
-  - `HandlerTypePredicate.forAssignableType(AdminController.class)`
-- 将匹配条件应用到所有 `@Controller` / `@RestController` 类
-- 同一个 Controller 命中多个前缀时，分别输出对应完整路径，并标注前缀来源
-- 若匹配条件无法静态判定，必须在报告中记录为“需人工确认”，不能直接忽略
-
-**输出要求：**
-
-```markdown
-=== [1] GET /api/admin/users/{id} ===
-位置: UserController.get (UserController.java:12)
-HTTP 方法: GET
-URL 路径: /api/admin/users/{id}
-Spring MVC 路径前缀: /admin
-前缀来源: WebConfig.configurePathMatch (WebConfig.java:5)
-匹配条件: c.isAnnotationPresent(AdminController.class)
-
-参数结构:
-  Path: {id} (Long)
-```
-
----
-
-## 路由注解
-
-### 类级别 @RequestMapping
-
-```java
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-    // 所有方法的路径前缀为 /api/users
-}
-```
-
-**路径组合规则：**
-```
-完整路径 = context-path + 类级别路径 + 方法级别路径
-例：/api + /users + /{id} = /api/users/{id}
-```
-
-### 方法级别注解
-
-| 注解 | HTTP 方法 | 用途 |
-|------|-----------|------|
-| `@GetMapping` | GET | 查询资源 |
-| `@PostMapping` | POST | 创建资源 |
-| `@PutMapping` | PUT | 更新资源（全量） |
-| `@PatchMapping` | PATCH | 更新资源（部分） |
-| `@DeleteMapping` | DELETE | 删除资源 |
-| `@RequestMapping(method = ...)` | 自定义 | 通用方法声明 |
-
-### @RequestMapping 属性
-
-```java
-@RequestMapping(
-    value = "/path",           // 路径
-    method = RequestMethod.POST, // HTTP 方法
-    params = "action=save",    // 请求参数条件
-    headers = "X-Requested-With=XMLHttpRequest", // 请求头条件
-    consumes = "application/json",  // 请求 Content-Type
-    produces = "application/json"   // 响应 Content-Type
-)
-```
-
-**提取要点：**
-- `params` 和 `headers` 条件需要在参数结构中体现
-- `consumes` 确定请求 Content-Type
-
----
-
-## 参数注解
-
-### 路径变量 @PathVariable
-
-```java
-@GetMapping("/users/{id}")
-public User getUser(@PathVariable Long id) { }
-
-@GetMapping("/users/{userId}/posts/{postId}")
-public Post getPost(@PathVariable Long userId, @PathVariable Long postId) { }
-
-// 自定义变量名
-@GetMapping("/users/{id}")
-public User getUser(@PathVariable("userId") Long id) { }
-```
-
-**提取规则：**
-- 路径中的 `{variable}` 标记
-- 参数名与变量名对应
-- 记录参数类型
-
-### 查询参数 @RequestParam
-
-```java
-@GetMapping("/search")
-public List<User> search(
-    @RequestParam String keyword,
-    @RequestParam(defaultValue = "0") int page,
-    @RequestParam(required = false) String sort
-) { }
-```
-
-**提取规则：**
-- 参数名：注解 value 或方法参数名
-- 是否必需：`required` 属性（默认 true）
-- 默认值：`defaultValue` 属性
-- 参数类型：影响格式验证
-
-### 请求体 @RequestBody
-
-```java
-@PostMapping("/users")
-public User create(@RequestBody UserDto userDto) { }
-
-@PostMapping("/data")
-public void processData(@RequestBody Map<String, Object> data) { }
-
-// 指定 Content-Type
-@PostMapping(value = "/users", consumes = "application/json")
-public User create(@RequestBody UserDto userDto) { }
-```
-
-**提取规则：**
-- 参数类型决定 Body 结构
-- 需要进一步分析 POJO 类的字段
-- `consumes` 确定请求 Content-Type
-
-### 请求头 @RequestHeader
-
-```java
-@GetMapping("/data")
-public Data getData(@RequestHeader("Authorization") String auth) { }
-
-// 带默认值
-@GetMapping("/data")
-public Data getData(
-    @RequestHeader(value = "User-Agent", defaultValue = "Unknown") String userAgent
-) { }
-```
-
-### Cookie @CookieValue
-
-```java
-@GetMapping("/profile")
-public Profile getProfile(@CookieValue("JSESSIONID") String sessionId) { }
-```
-
-### 表单参数 @RequestParam (multipart)
-
-```java
-@PostMapping("/upload")
-public String upload(
-    @RequestParam("file") MultipartFile file,
-    @RequestParam("description") String description
-) { }
-```
-
-**参数格式：**
-```
-Content-Type: multipart/form-data
-参数: file (MultipartFile), description (String)
-```
-
----
-
-## 路径解析规则
-
-### Ant 风格路径匹配
-
-```java
-@GetMapping("/files/*")
-public String file() { }  // 匹配 /files/abc
-
-@GetMapping("/files/**")
-public String files() { }  // 匹配 /files/abc, /files/abc/def
-
-@GetMapping("/{path:[a-z]+}")
-public String path() { }  // 正则表达式匹配
-```
-
-### 路径变量编码
-
-```java
-@GetMapping("/files/{filename:.*}")
-public Resource getFile(@PathVariable String filename) { }
-```
-
----
-
-## 常见模式
-
-### RESTful CRUD
-
-```java
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    @GetMapping
-    public List<User> list() { }
-
-    @GetMapping("/{id}")
-    public User get(@PathVariable Long id) { }
-
-    @PostMapping
-    public User create(@RequestBody UserDto dto) { }
-
-    @PutMapping("/{id}")
-    public User update(@PathVariable Long id, @RequestBody UserDto dto) { }
-
-    @DeleteMapping("/{id}")
-    public void delete(@PathVariable Long id) { }
-}
-```
-
-### 分页查询
-
-```java
-@GetMapping("/users")
-public Page<User> list(
-    @RequestParam(defaultValue = "0") int page,
-    @RequestParam(defaultValue = "10") int size,
-    @RequestParam(defaultValue = "id,desc") String[] sort
-) { }
-```
-
-### 多条件查询
-
-```java
-@GetMapping("/search")
-public List<User> search(
-    @RequestParam(required = false) String name,
-    @RequestParam(required = false) String email,
-    @RequestParam(required = false) Integer minAge,
-    @RequestParam(required = false) Integer maxAge
-) { }
-```
-
----
-
-## 静态资源
-
-```java
-@Configuration
-public class WebConfig implements WebMvcConfigurer {
-    @Override
-    public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        registry.addResourceHandler("/static/**")
-                .addResourceLocations("classpath:/static/");
-    }
-}
-```
-
-**提取要点：**
-- 静态资源路径也需要记录
-- 存在目录遍历漏洞，需记录该路径
-
----
-
-## 拦截器和过滤器
-
-```java
-@Component
-public class AuthInterceptor implements HandlerInterceptor {
-    @Override
-    public boolean preHandle(HttpServletRequest request, ...) {
-        String path = request.getRequestURI();
-        // 检查路径是否需要认证
-    }
-}
-```
-
-**提取要点：**
-- 拦截器限制路径访问，需记录拦截规则
-- 记录受限路径列表
-
----
-
-## Spring Security 路径配置
-
-```java
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig {
-
-    @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) {
-        http.authorizeHttpRequests(auth -> auth
-            .requestMatchers("/api/public/**").permitAll()
-            .requestMatchers("/api/admin/**").hasRole("ADMIN")
-            .anyRequest().authenticated()
-        );
-    }
-}
-```
-
-**提取要点：**
-- 记录公开访问的路径
-- 记录需要特定角色的路径
+匹配类上的 `/users` 和方法上的 `/{id}` 后，最终 URL 是 `/admin/users/{id}`。
+
+## 参数规则
+
+| 参数形态 | 输出来源 |
+|----------|----------|
+| `@PathVariable` | Path |
+| `@RequestParam` | Query/Form |
+| `@RequestBody` | Body |
+| `@RequestHeader` | Header |
+| `@CookieValue` | Cookie |
+| `MultipartFile`, `Part` | File/Body multipart |
+| `@ModelAttribute` 或复杂对象无注解 | Query/Form 对象绑定 |
+
+## 路由展开
+
+- `@RequestMapping(path={"/a","/b"})` 计为两条路径。
+- `method={GET,POST}` 计为两个 HTTP 方法。
+- `/{id}`、`/**` 是路径模板，不展开具体值。
+- `params`、`headers` 条件要记录，因为它们影响可达性。
+
+## 不要误列
+
+- `@ControllerAdvice` 不是路由。
+- `HandlerInterceptor` / Filter 不是路由。
+- 静态资源 handler 一般不列为业务接口。
+- Actuator 端点只在用户明确要求框架端点时列出。
+
+## Gotchas
+
+- 类继承和接口默认方法可能携带 mapping，要检查父类/接口。
+- Kotlin/record/constructor binding 的 DTO 字段可能不在传统 getter/setter 中。
+- Spring Security 的 URL 规则只影响鉴权，不在本 skill 中判断是否安全。

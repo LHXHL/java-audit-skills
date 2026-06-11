@@ -1,327 +1,76 @@
-# Struts 2 路由分析
+# Struts2 路由参考
 
-## 目录
+只在项目存在 Struts2 filter、`struts.xml`、`struts-*.xml`、Action 类或 `struts2-core` 依赖时读取本文件。
 
-- [项目识别](#项目识别)
-- [配置文件](#配置文件)
-- [路由定义](#路由定义)
-- [参数处理](#参数处理)
-- [常见模式](#常见模式)
+## 必查配置
 
----
+- `WEB-INF/web.xml` 中的 `StrutsPrepareAndExecuteFilter` 或旧版 FilterDispatcher。
+- `struts.xml` 和所有被 `<include file="...">` 引入的配置。
+- `struts-*.xml`、插件配置、package 继承。
+- `struts.action.extension`，默认常见为 `action`，也可能为空或多个扩展。
 
-## 项目识别
+## URL 组成
 
-**特征文件：**
-```
-struts.xml - 主配置文件
-struts.properties - 属性配置
-web.xml - Struts 过滤器配置
+```text
+context-path + package namespace + action name + extension
 ```
 
-**特征类：**
-```java
-extends ActionSupport
-implements Action
-```
-
-**特征包：**
-```
-org.apache.struts2.*
-com.opensymphony.xwork2.*
-```
-
----
-
-## 配置文件
-
-### web.xml 配置
-
-```xml
-<filter>
-    <filter-name>struts2</filter-name>
-    <filter-class>org.apache.struts2.dispatcher.filter.StrutsPrepareAndExecuteFilter</filter-class>
-</filter>
-<filter-mapping>
-    <filter-name>struts2</filter-name>
-    <url-pattern>/*</url-pattern>
-</filter-mapping>
-```
-
-**提取要点：**
-- 过滤器 URL 模式决定 Struts 处理的路径范围
-
-### struts.xml 配置
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE struts PUBLIC
-    "-//Apache Software Foundation//DTD Struts Configuration 2.5//EN"
-    "http://struts.apache.org/dtds/struts-2.5.dtd">
-
-<struts>
-    <constant name="struts.devMode" value="true" />
-    <constant name="struts.action.extension" value="action,," />
-
-    <package name="default" extends="struts-default" namespace="/">
-        <action name="login" class="com.example.action.LoginAction" method="login">
-            <result name="success">/home.jsp</result>
-            <result name="input">/login.jsp</result>
-        </action>
-    </package>
-</struts>
-```
-
----
-
-## 路由定义
-
-### action 标签属性
-
-```xml
-<action name="user_*" class="com.example.action.UserAction" method="{1}">
-    <!-- user_* 匹配 user_list、user_detail 等 -->
-    <!-- {1} 会被替换为 * 匹配的内容 -->
-</action>
-```
-
-| 属性 | 说明 | 示例 |
-|------|------|------|
-| `name` | Action 名称（路径） | `"user_list"` |
-| `class` | Action 类全限定名 | `"com.example.action.UserAction"` |
-| `method` | 执行的方法名 | `"list"` |
-| `namespace` | 命名空间 | `"/api"` |
-
-### namespace - 命名空间
-
-```xml
-<package name="user" extends="struts-default" namespace="/user">
-    <action name="list" class="com.example.action.UserAction" method="list">
-    </action>
-</package>
-```
-
-**完整路径：** `/user/list.action`（默认扩展名）
-
-### 通配符映射
-
-```xml
-<!-- 匹配 user_list、user_create、user_delete 等 -->
-<action name="user_*" class="com.example.action.UserAction" method="{1}">
-</action>
-
-<!-- 匹配所有 *_user 操作 -->
-<action name="*_user" class="com.example.action.UserAction" method="do{1}">
-</action>
-
-<!-- 多级通配 -->
-<action name="*_*" class="com.example.action.{1}Action" method="{2}">
-</action>
-```
-
-**提取要点：**
-- 记录通配符模式
-- 列举通配符模板的展开结果（如 user_list、user_detail）
-
----
-
-## 参数处理
-
-### 参数提交
-
-**表单提交：**
-```html
-<form action="login.action" method="post">
-    <input name="username" />
-    <input name="password" />
-</form>
-```
-
-**URL 参数：**
-```
-/user/list.action?page=1&size=10
-```
-
-### ModelDriven 模式
-
-```java
-public class UserAction extends ActionSupport implements ModelDriven<User> {
-    private User user = new User();
-
-    public User getModel() {
-        return user;
-    }
-
-    public String save() {
-        // user.username、user.password 自动填充
-    }
-}
-```
-
-**请求参数：** `username=admin&password=123456`
-
-### DriverAware 模式
-
-```java
-public class UserAction extends ActionSupport implements Preparable {
-    private User user;
-
-    public void prepare() throws Exception {
-        user = new User();
-    }
-
-    public String save() {
-        // 参数自动绑定到 user
-    }
-}
-```
-
-### 对象图导航
-
-```java
-public class UserAction extends ActionSupport {
-    private User user;
-
-    // getter/setter
-}
-```
-
-**请求参数：**
-```
-user.username=admin
-user.password=123456
-user.profile.email=test@example.com
-```
-
----
-
-## 常见模式
-
-### REST 插件
-
-```xml
-<package name="user" extends="rest-default" namespace="/user">
-    <action name="user" class="com.example.action.UserController">
-        <!-- 自动映射 HTTP 方法到 Action 方法 -->
-        <!-- GET    /user/      → index() -->
-        <!-- GET    /user/1     → show() -->
-        <!-- POST   /user/      → create() -->
-        <!-- PUT    /user/1     → update() -->
-        <!-- DELETE /user/1     → delete() -->
-    </action>
-</package>
-```
-
-**方法映射：**
-
-| HTTP 方法 | 路径 | Action 方法 |
-|-----------|------|-------------|
-| GET | /user | `index()` |
-| GET | /user/1 | `show()` |
-| POST | /user | `create()` |
-| PUT | /user/1 | `update()` |
-| DELETE | /user/1 | `delete()` |
-| POST | /user/1?_method=DELETE | `delete()` |
+`namespace="/"` 表示根 namespace。扩展为空时不要强行加 `.action`。
 
-### 约定优于配置
-
-```xml
-<constant name="struts.convention.action.packages" value="com.example.action" />
-<constant name="struts.convention.action.suffix" value="Action" />
-<constant name="struts.convention.package.locators" value="action" />
-```
-
-**约定规则：**
-- 类名：`XxxAction` → 路径：`xxx`
-- 包名：`com.example.action.user.UserAction` → 命名空间：`/user`
-- 方法名：`execute()` → 默认执行方法
-
-### JSON 插件
-
-```xml
-<package name="user" extends="json-default" namespace="/api/user">
-    <action name="list" class="com.example.action.UserAction" method="list">
-        <result type="json">
-            <param name="root">userList</param>
-        </result>
-    </action>
-</package>
-```
-
----
-
-## 结果类型
-
-### 结果类型
-
-| 类型 | 说明 | Content-Type |
-|------|------|--------------|
-| `dispatcher` | 转发到 JSP | text/html |
-| `redirect` | 重定向 | - |
-| `redirectAction` | 重定向到 Action | - |
-| `json` | JSON 输出 | application/json |
-| `stream` | 文件下载 | application/octet-stream |
-
-```xml
-<action name="download" class="com.example.action.FileAction" method="download">
-    <result name="success" type="stream">
-        <param name="contentType">application/octet-stream</param>
-        <param name="inputName">inputStream</param>
-        <param name="contentDisposition">attachment;filename="${filename}"</param>
-    </result>
-</action>
-```
-
----
-
-## 拦截器
-
-### 拦截器栈
-
-```xml
-<interceptors>
-    <interceptor name="auth" class="com.example.interceptor.AuthInterceptor" />
-    <interceptor-stack name="authStack">
-        <interceptor-ref name="auth" />
-        <interceptor-ref name="defaultStack" />
-    </interceptor-stack>
-</interceptors>
-
-<default-interceptor-ref name="authStack" />
-```
-
-**提取要点：**
-- 记录拦截器路径规则
-- 影响请求可达性，需记录拦截规则
-
----
-
-## 常见漏洞模式
-
-### 参数绑定
-
-```java
-public class UserAction extends ActionSupport {
-    private User user;  // 直接绑定，可能允许修改敏感字段
-}
-```
-
-### 动态方法调用
-
-```xml
-<constant name="struts.enable.DynamicMethodInvocation" value="true" />
-```
-
-**访问方式：** `/user!list.action`
-
----
-
-## 扩展名配置
-
-```xml
-<constant name="struts.action.extension" value="action,," />
-```
-
-**提取要点：**
-- 空字符串表示允许无扩展名
-- 影响路由路径格式
+## 普通 action
+
+对每个 `<action>` 输出：
+
+- URL。
+- class。
+- method，未配置时通常是 `execute`，但需结合 DMI/通配符确认。
+- result 不作为路由，但可帮助识别返回类型。
+- 参数来自 Action 字段、setter、ModelDriven 对象和父类字段。
+
+## 通配符 action
+
+遇到以下模式必须展开：
+
+- `name="*_*"`
+- `name="user_*"`
+- `name="*"`
+- class 或 method 中出现 `{1}`、`{2}`。
+
+处理步骤：
+
+1. 根据 namespace 和 class 模板定位候选 Action 类。
+2. 反编译或读取 Action 类 public 业务方法。
+3. 排除 getter/setter、`validate`、`input`、继承自框架的通用方法。
+4. 输出一个“模式族”头部，再逐行列出全部实际 URL 到方法映射。
+5. 模式族中的实例数量计入总接口数。
+
+## 动态方法调用
+
+如果启用 DMI 或 URL 支持 `action!method.action`：
+
+- 检查 `struts.enable.DynamicMethodInvocation`。
+- 识别可被调用的 public 业务方法。
+- 将每个可达 method 作为独立入口或实例列出。
+
+## 参数来源
+
+| 模式 | 参数来源 |
+|------|----------|
+| 普通 Action 字段 | setter 或字段名 |
+| `ModelDriven<T>` | model 类型字段 |
+| 嵌套对象 | OGNL 对象图，如 `user.name` |
+| 文件上传 | `File`, `fileName`, `contentType` 三元字段 |
+| 父类字段 | 读取公共基类和抽象 Action |
+
+## 不要误列
+
+- getter/setter 本身不是 action method。
+- `ActionSupport` 继承方法不是业务入口。
+- result JSP 不是新的 HTTP route。
+
+## Gotchas
+
+- 只列 `<action name="*_*">` 模板是失败输出，必须列实例。
+- 多个 package 继承同一 namespace 时要合并配置，不要覆盖。
+- 同名 action 在不同 namespace 是不同入口。
+- 参数可能只存在父类或 ModelDriven 类型中。
