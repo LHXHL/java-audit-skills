@@ -1,430 +1,155 @@
 ---
 name: java-file-read-audit
-description: Java Web 源码任意文件读取漏洞审计工具。从源码中识别所有文件读取操作并检测路径遍历漏洞。适用于：(1) 识别文件读取框架和实现方式，(2) 发现任意文件读取漏洞，(3) 检测路径遍历漏洞，(4) 审计文件路径参数校验逻辑。支持 BufferedReader、Scanner、Files.lines/readAllLines/readAllBytes 等方法。**支持反编译 .class/.jar 文件提取文件操作逻辑**。结合 java-route-mapper 使用可实现完整的路由+文件读取审计。
+description: 当用户要求审计 Java 源码、字节码或 pipeline 证据中的任意文件读取、路径遍历、文件下载、FileInputStream/Files/Resource/InputStream 文件读取 sink，或需要判断外部参数是否能控制读取路径时使用；只做路由枚举、调用链追踪、文件上传、SQL、XXE、反序列化、鉴权或组件 CVE 扫描时不要使用。
 ---
 
-# Java 文件读取漏洞审计工具
-
-检查 Java Web 项目源码，识别文件读取操作实现，检测任意文件读取和路径遍历漏洞。
-
-## 核心要求
-
-**此技能必须完整分析所有文件读取相关代码，不允许省略。**
-
-- ✅ 识别所有文件读取入口点（BufferedReader/Scanner/Files）
-- ✅ 分析每个文件操作的路径来源
-- ✅ 检测所有潜在的路径遍历模式
-- ✅ 为每个漏洞点提供验证 PoC
-- ❌ 禁止省略任何文件读取操作
-- ❌ 禁止跳过反编译步骤
-
----
-
-## 漏洞分级标准
-
-**详见 [SEVERITY_RATING.md](../java-shared/SEVERITY_RATING.md)**
-
-- 漏洞编号格式: `{C/H/M/L}-FILE-{序号}`
-- 严重等级 = f(可达性 R, 影响范围 I, 利用复杂度 C)
-- Score = R × 0.40 + I × 0.35 + C × 0.25，映射 CVSS 3.1
-
-| 前缀 | CVSS 3.1 | 含义 |
-|------|----------|------|
-| 🔴 **C** | 9.0-10.0 | 可直接导致系统沦陷 |
-| 🟠 **H** | 7.0-8.9 | 可造成重大损害 |
-| 🟡 **M** | 4.0-6.9 | 可造成一定损害 |
-| 🔵 **L** | 0.1-3.9 | 安全加固建议 |
-
----
-
-## 技能协作流程（CRITICAL）
-
-**java-file-read-audit 应在 java-route-mapper 之后执行，基于已梳理的路由信息进行审计。**
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    完整审计流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  [步骤1] java-route-mapper                                      │
-│     │                                                           │
-│     │ 输出：                                                    │
-│     │ ├─ 所有 HTTP 路由列表                                     │
-│     │ ├─ 每个路由的参数定义                                     │
-│     │ │   ├─ 参数名、类型                                       │
-│     │ │   └─ JSON 内部字段                                      │
-│     │ └─ Burp Suite 请求模板                                    │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤2] java-file-read-audit（本技能）                         │
-│     │                                                           │
-│     │ 输入：java-route-mapper 的输出                            │
-│     │                                                           │
-│     │ 执行：                                                    │
-│     │ ├─ 快速扫描文件操作                                       │
-│     │ ├─ 参数-文件路径映射分析                                  │
-│     │ ├─ 检查每个 String 参数是否用作文件路径                   │
-│     │ └─ 执行条件分析                                           │
-│     │                                                           │
-│     ├─── 需要深入追踪 ───→ java-route-tracer                    │
-│     │                           │                               │
-│     │    ←── 返回调用链信息 ────┘                               │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤3] 输出综合审计报告                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 输入依赖（来自 java-route-mapper）
-
-**在开始审计前，必须先检查是否已有 java-route-mapper 的输出文件：**
-
-```
-{project_name}_audit/
-├── route_mapper/
-│   ├── {project_name}_route_mapper_{timestamp}.md    ← 主索引（先读此文件定位模块详情）
-│   ├── {module_name}/
-│   │   └── {project_name}_module_{module_name}_{timestamp}.md  ← 模块详情
-│   └── webservice/
-│       └── {project_name}_ws_{service_name}_{timestamp}.md
-└── file_read_audit/
-    └── {project_name}_file_read_audit_{timestamp}.md  ← 本技能输出
-```
-
-**如果 route_mapper 输出不存在，必须先运行：**
-```python
-Skill(skill="java-route-mapper", args="--project {project_path}")
-```
-
-### 从 route_mapper 获取的关键信息
-
-| 信息 | 用途 |
-|:-----|:-----|
-| 路由路径 | 定位 Controller/Action 入口 |
-| 参数名 + 类型 | 识别 String 类型高危参数 |
-| JSON 内部字段 | 识别嵌套参数（如 `fileInfo.path`） |
-| 参数用途描述 | 判断是否用于文件路径 |
-
----
-
-## 工作流程（三阶段）
-
-### 阶段1: 快速扫描（优先执行）
-
-**目标：快速定位文件读取相关代码，不遗漏关键点。**
-
-```bash
-# 1.1 搜索文件读取方法
-grep -ri "BufferedReader\|FileReader\|FileInputStream" --include="*.java"
-grep -ri "Scanner.*File\|Scanner.*Path" --include="*.java"
-grep -ri "Files.lines\|Files.readAllLines\|Files.readAllBytes" --include="*.java"
-
-# 1.2 搜索文件下载/读取接口
-grep -ri "download\|readFile\|getFile\|viewFile" --include="*.java"
-grep -ri "@RequestMapping.*download\|@GetMapping.*download" --include="*.java"
-
-# 1.3 搜索路径拼接模式
-grep -ri "new File.*\+" --include="*.java"
-grep -ri "Paths.get.*\+" --include="*.java"
-grep -ri "File.separator" --include="*.java"
-
-# 1.4 搜索路径参数
-grep -ri "filePath\|fileName\|file\|path" --include="*.java" | grep "@RequestParam\|@PathVariable"
-```
-
-**输出：高危文件清单（按优先级排序）**
-
-| 优先级 | 文件类型 | 审计重点 |
-|:-------|:---------|:---------|
-| P0 | `*Controller.java` 中包含 download/readFile 的方法 | filePath, fileName 参数 |
-| P1 | `*Service.java`, `*ServiceImpl.java` | 文件路径处理逻辑 |
-| P2 | `*Util.java`, `*Helper.java` | 通用文件读取方法 |
-| P3 | `*Dao.java`, `*Repository.java` | 配置文件读取 |
-
-### 阶段2: 参数-文件路径映射检查
-
-**基于 java-route-mapper 的输出，检查每个参数是否用作文件路径。**
-
-#### 2.1 高危参数识别
-
-从 route_mapper 输出中提取所有 String 类型参数：
-
-| 参数来源 | 参数名 | 类型 | 文件读取漏洞可能性 |
-|:---------|:-------|:-----|:-------------|
-| @RequestParam | `filePath` | String | **高危** - 直接用作路径 |
-| @RequestParam | `fileName` | String | **高危** - 文件名拼接 |
-| @RequestParam | `file` | String | **高危** - 文件路径 |
-| @PathVariable | `path` | String | **高危** - URL 路径参数 |
-| JSON | `fileInfo.path` | String | **高危** - JSON 内部字段 |
-
-#### 2.2 参数追踪
-
-对每个高危参数，追踪其在代码中的使用：
-
-```
-HTTP 参数: filePath (String)
-    ↓ 传递
-Controller.download(filePath)
-    ↓ 传递
-Service.readFile(filePath)
-    ↓ 拼接
-basePath + File.separator + filePath
-    ↓ 使用
-new FileInputStream(fullPath)  ← 文件读取点
-```
-
-#### 2.3 文件读取点检查
-
-对阶段1发现的每个文件读取点，检查：
-
-1. **文件路径是否可控？**
-   - 完全来自用户输入 → 高危
-   - 基础路径固定 + 用户输入文件名 → 中危
-   - 完全硬编码 → 安全
-
-2. **是否有路径校验？**
-   - 白名单目录限制 → 安全
-   - 文件扩展名校验 → 可能绕过
-   - 无校验 → 高危
-
-3. **是否过滤路径遍历字符？**
-   - 过滤 `../`, `..\\` → 可能安全（需测试绕过）
-   - 无过滤 → 高危
-
-### 阶段3: 深入检查与报告
-
-#### 3.1 触发 java-route-tracer
-
-当发现以下情况时，调用 java-route-tracer 获取完整调用链：
-
-| 触发条件 | 调用方式 |
-|:---------|:---------|
-| 参数经过多层传递 | `Skill(skill="java-route-tracer", args="--route {route}")` |
-| 路径拼接逻辑复杂 | `Skill(skill="java-route-tracer", args="--route {route}")` |
-| 校验逻辑不明确 | `Skill(skill="java-route-tracer", args="--route {route}")` |
-
-#### 3.2 执行条件检查
-
-发现文件读取后，必须检查执行条件（详见后续章节）。
-
-#### 3.3 生成报告
-
-整合所有分析结果，生成综合审计报告。
-
----
-
-## 文件读取方法识别
-
-详细规则参见 [FILE_READ_METHODS.md](references/FILE_READ_METHODS.md)
-
-| 方法类别 | 识别特征 | 风险点 |
-|---------|----------|--------|
-| BufferedReader | `new BufferedReader(new FileReader(path))` | path 参数来源 |
-| Scanner | `new Scanner(new FileReader(path))` | path 参数来源 |
-| Files.lines | `Files.lines(Path.of(path))` | path 参数来源 |
-| Files.readAllLines | `Files.readAllLines(Path.of(path))` | path 参数来源 |
-| Files.readAllBytes | `Files.readAllBytes(Path.of(path))` | path 参数来源 |
-| FileInputStream | `new FileInputStream(path)` | path 参数来源 |
-
-### 反编译阶段（CRITICAL）
-
-**当源码不可用时，必须使用 CFR 反编译器反编译文件操作相关类。**
-
-详细策略参见 [DECOMPILE_STRATEGY.md](references/DECOMPILE_STRATEGY.md)
-
-#### 反编译工具调用
-
-```bash
-# 反编译单个 Controller/Service 类
-java -jar {CFR_JAR} /path/to/FileController.class --outputdir {output_path}/decompiled
-
-# 反编译文件操作相关目录
-find /path/to/WEB-INF/classes/com/example/controller -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 反编译多个指定文件
-java -jar {CFR_JAR} /path/to/FileController.class /path/to/FileService.class /path/to/FileUtil.class --outputdir {output_path}/decompiled
-```
-
-**输出文件命名规范：**
-- 反编译后的文件保存在 `{output_dir}` 目录
-- 文件名格式：`{ClassName}.java`
-- 保持原始包结构：`com/example/controller/FileController.java`
-
-#### 必须反编译的类
-
-| 类型 | 匹配模式 | 目的 |
-|------|----------|------|
-| Controller | `*Controller.class` | 提取路由和参数定义 |
-| Service | `*Service.class`, `*ServiceImpl.class` | 追踪文件操作调用链 |
-| 工具类 | `*FileUtil*.class`, `*FileHelper*.class` | 提取通用文件读取方法 |
-| DAO | `*Dao.class`, `*Repository.class` | 配置文件读取逻辑 |
-
----
-
-## 执行条件检查（CRITICAL - 避免误报）
-
-**发现文件读取代码后，必须检查该代码是否真的会被执行！**
-
-### 1. 路径校验检查
-
-在发现文件读取后，必须检查是否存在路径校验：
-
-| 检查模式 | 代码特征 | 处理方式 |
-|----------|----------|----------|
-| 白名单目录 | `path.startsWith("/upload/")` | 标注为受限路径 |
-| 扩展名校验 | `fileName.endsWith(".txt")` | 检查是否可绕过 |
-| 路径规范化 | `new File(path).getCanonicalPath()` | 检查是否完整 |
-| 无校验 | 直接使用用户输入 | 标注为高危 |
-
-### 2. 代码路径可达性分析
-
-追踪从入口到文件读取的完整路径，检查：
-
-| 检查项 | 说明 | 影响 |
-|--------|------|------|
-| 提前 return | `if (!validate()) return;` | 可能阻止执行 |
-| 异常抛出 | `throw new SecurityException()` | 代码不执行 |
-| 条件不满足 | `if (false)` 等死代码 | 代码不执行 |
-| 权限限制 | 仅管理员可访问 | 需确认权限 |
-
-### 3. 结论分级（必须标注）
-
-| 状态 | 含义 | 后续操作 |
-|------|------|----------|
-| ⚠️ **待验证** | 代码存在文件读取，但执行条件未确认 | 需确认目标环境 |
-| ✅ **已确认可利用** | 已验证代码路径会执行且无有效校验 | 进行漏洞利用测试 |
-| ❌ **不可利用** | 存在有效的安全校验 | 标注原因，降低优先级 |
-| 🔍 **环境依赖** | 漏洞存在但仅在特定条件下可利用 | 标注环境条件 |
-
----
-
-## 路径遍历检测规则速查
-
-### ⚠️ 高危模式检测（CRITICAL）
-
-| 危险模式 | 代码示例 | 风险说明 |
-|:---------|:---------|:---------|
-| 直接拼接 | `basePath + fileName` | 未过滤 `../` |
-| File.separator 拼接 | `basePath + File.separator + fileName` | 可路径遍历 |
-| 字符串格式化 | `String.format("%s/%s", base, file)` | 未过滤 `../` |
-| Path.of 拼接 | `Path.of(basePath, fileName)` | 可能路径遍历 |
-| Paths.get 拼接 | `Paths.get(basePath).resolve(fileName)` | 需检查规范化 |
-
-### ⚠️ 安全 vs 危险模式
-
-| 类型 | 危险模式 | 安全模式 |
-|------|----------|----------|
-| 路径拼接 | `basePath + fileName` | 白名单校验 + 规范化 |
-| 文件读取 | `new FileInputStream(userInput)` | `getCanonicalPath()` 校验 |
-| 路径遍历 | 无过滤 `../` | `path.contains("..")` 拦截 |
-| 扩展名 | 不校验 | 白名单扩展名 |
-
-**安全模式示例：**
-```java
-// 安全: 路径规范化 + 白名单目录校验
-String basePath = "/var/uploads";
-File file = new File(basePath, fileName);
-String canonicalPath = file.getCanonicalPath();
-if (!canonicalPath.startsWith(basePath)) {
-    throw new SecurityException("Path traversal detected");
-}
-```
-
----
-
-## 审计检查清单（防遗漏）
-
-### 必须搜索的危险模式
-
-**在审计开始时，必须执行以下搜索：**
-
-```bash
-# 文件读取方法检测
-grep -r "FileInputStream\|FileReader\|BufferedReader" --include="*.java"
-grep -r "Files.readAllBytes\|Files.readAllLines\|Files.lines" --include="*.java"
-
-# 路径拼接检测
-grep -r "new File.*\+" --include="*.java"
-grep -r "File.separator" --include="*.java"
-
-# 下载接口检测
-grep -r "download\|readFile\|getFile" --include="*.java"
-```
-
----
-
-## 数据流追踪（需要时加载 java-route-tracer）
-
-### 何时需要参数追踪
-
-当发现以下情况时，**必须加载 java-route-tracer 技能进行深度追踪**：
-
-| 场景 | 说明 | 操作 |
-|------|------|------|
-| 参数经过多层传递 | HTTP 参数经 Controller → Service → Util 多层传递后用作文件路径 | 加载 java-route-tracer |
-| 路径拼接复杂 | 多处路径拼接和转换 | 加载 java-route-tracer |
-| 校验逻辑分散 | 校验逻辑在不同类/方法中 | 加载 java-route-tracer |
-
----
-
-## 报告生成
-
-**输出单个综合审计报告文件：**
-
-```
-{project_name}_audit/file_read_audit/
-└── {route_name}/
-    └── {project_name}_file_read_audit_{timestamp}.md      # 综合审计报告
-```
-
-**路由名说明：**
-- 路由名从路由路径提取，去掉前缀斜杠和特殊字符
-- 例如：`/api/file/download` → `api_file_download`
-- 例如：`/download.action` → `download`
-
----
-
-## 输出格式
-
-**严格按照 [references/OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) 中的填充式模板生成输出文件。**
-
-- 文件名格式: `{project_name}_file_read_audit_{YYYYMMDD_HHMMSS}.md`
-- 不得修改模板结构、不得增删章节、不得调整顺序
-- 所有【填写】占位符必须替换为实际内容
-- 通用规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
-- 漏洞聚合规则参考: [java-shared/VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md)，同根因多入口合并为一个漏洞编号并列出“受影响入口”，不同条件入口拆分。
-
----
-
-## 验证检查清单
-
-**在标记审计完成前，必须执行以下检查：**
-
-### 代码分析检查
-- [ ] 所有 Controller 类已分析
-- [ ] 所有 Service/Util 类已分析
-- [ ] 每个文件操作都有路径来源标注
-
-### 执行条件检查（CRITICAL）
-- [ ] 检查了路径校验逻辑
-- [ ] 检查了代码路径可达性
-- [ ] 标注了每个漏洞的可利用性状态
-
-### 漏洞检测检查
-- [ ] 所有文件读取方法已检测
-- [ ] 所有路径拼接模式已检测
-- [ ] 所有参数来源已追踪
-
-### 报告完整性检查
-- [ ] **综合审计报告已生成，且通过 OUTPUT_TEMPLATE.md 末尾的自检清单**
-- [ ] **反编译输出文件路径已标注**
-
----
-
-## 参考资料
-
-- [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) - 输出报告填充式模板
-- [FILE_READ_METHODS.md](references/FILE_READ_METHODS.md) - Java 文件读取方法详解
-- [PATH_TRAVERSAL.md](references/PATH_TRAVERSAL.md) - 路径遍历攻击详解
-- [DECOMPILE_STRATEGY.md](references/DECOMPILE_STRATEGY.md) - 反编译策略指南
+# Java File Read Audit
+
+## 当前定位
+
+`java-file-read-audit` 是 Java 审计技能集中的任意文件读取和路径遍历专项判定层。它消费源码、反编译结果、`java-route-mapper` 路由清单或 `java-route-tracer` 调用链证据，判断：
+
+- 是否存在真实文件读取、下载、模板/资源读取或流式返回 sink。
+- 外部输入是否影响文件名、相对路径、绝对路径、资源 key、下载 ID 或 URL。
+- 路径是否被白名单、canonical/normalize、ID 映射、扩展名和基础目录约束保护。
+- 结论应标为确认漏洞、条件成立、待验证、不可确认还是非漏洞。
+- 确认漏洞或条件成立项是否能提供 Burp Suite 请求和路径 payload 给开发单位复核。
+
+本 skill 不负责全量路由枚举，不替代调用链追踪，不判断文件上传写入漏洞，不扫描依赖 CVE，不输出未验证的系统文件读取成功结论。
+
+## 上下游边界
+
+上游输入可以是：
+
+- 用户指定的 Java 项目路径、路由、类、方法、下载接口或文件读取代码片段。
+- `java-route-mapper` 产出的路由、参数和入口方法清单。
+- `java-route-tracer` 产出的调用链、可控性、分支条件和 FILE sink 候选。
+- 源码不可用时的 `.class`、`.jar`、`.war` 或已有反编译结果。
+
+下游通常读取：
+
+- 文件读取审计报告。
+- 受影响入口、可控路径、文件读取 sink、防护缺口和限制说明。
+- 确认漏洞或条件成立项的 Burp Suite 请求和路径 payload。
+- 待验证或不可确认项的补证清单。
+
+相邻 skill 边界：
+
+- `java-route-mapper`：枚举路由和入口参数；本 skill 只消费其结果。
+- `java-route-tracer`：追踪参数到 FILE sink；本 skill 只在需要数据流证据时读取或请求调用链追踪。
+- `java-file-upload-audit`：处理上传、任意文件写入、上传路径穿越；本 skill 只处理读取。
+- `java-xxe-audit`：处理 XML 解析读本地文件；本 skill 只在 XML 外部实体以外的普通文件读取 sink 中判定。
+- `java-auth-audit`：判断鉴权和越权；本 skill 只引用鉴权上下文，不扩写成鉴权漏洞。
+- `java-vuln-scanner`：扫描依赖组件 CVE；本 skill 不编造 CVE、CVSS 或修复版本。
+
+## 触发条件
+
+满足任一条件时触发：
+
+- 用户明确要求审计任意文件读取、路径遍历、目录遍历、文件下载、读取本地文件、读取配置文件或资源文件泄露。
+- 代码或上游证据出现 `FileInputStream`、`FileReader`、`Files.read*`、`ResourceUtils`、`ClassPathResource`、`ServletContext#getResourceAsStream`、`response.getOutputStream` 下载链路等 FILE sink。
+- `java-route-tracer` 已报告 FILE sink 证据，需要做安全结论和可复核交付。
+- 源码缺失但字节码中可能包含下载 Controller、文件 Service、资源读取工具类，需要反编译后审计。
+- 用户给出候选代码片段，要求判断参数是否能穿越目录或读取敏感文件。
+
+## 不触发条件
+
+以下情况不要触发本 skill：
+
+- 只要求列出 Java Web 路由、Controller、Servlet 或 WebService operation。
+- 只要求追踪参数调用链，不要求判断文件读取漏洞。
+- 只审计上传保存、任意文件写入、覆盖文件或 WebShell 上传。
+- 只审计 SQL、XXE、反序列化、SSRF、命令执行、鉴权或组件 CVE。
+- 文件路径完全由服务端常量、闭合 ID 映射或不可控配置决定，且用户不能影响目标文件。
+- 用户要求批量读取线上目标文件、未授权攻击、敏感文件内容回显或破坏性验证。
+
+## 成功标准
+
+合格输出必须同时满足：
+
+- 每个结论都有入口、可控参数、数据流、真实文件读取 sink、防护状态和代码位置。
+- 不把候选风险、缺失实现、未反编译类、静态资源正常访问或单独的 `fileName` 命中写成已确认漏洞。
+- 明确区分确认漏洞、条件成立、待验证、不可确认和非漏洞。
+- 对 canonical/normalize、基础目录、ID 映射、白名单、扩展名、黑名单、URL 解码和执行条件给出证据。
+- 同根因多入口按相同 sink、相同防护缺口、相同修复点聚合；不同鉴权、不同基础目录、不同参数来源或不同证据等级拆分。
+- 报告严格使用 `references/OUTPUT_TEMPLATE.md` 的 6 个编号章节，不添加输出自检、技能源校验、测试提示词或模型验收信息。
+- 确认漏洞或条件成立项必须包含 Burp Suite 请求和 payload；待验证、不可确认和非漏洞项不得输出可复制请求。
+- 第 5 节只允许写确认漏洞或条件成立的风险详情；待验证、不可确认和非漏洞只能放在第 4 节和第 6 节。
+- 面向用户的最终对话回复只给报告路径和一句简短结论，不列发现详情、不引用 hard rule 编号、不输出后续工具建议。
+- 不编造 CVE、CVSS、修复版本、文件读取成功、系统类型、真实敏感文件内容或不存在的代码路径。
+
+## 工作流
+
+1. 确定审计范围：读取用户路径、候选入口、上游 route/tracer 报告和已有反编译结果。
+2. 选择 references：sink 识别读 `FILE_READ_METHODS.md`；路径遍历读 `PATH_TRAVERSAL.md`；源码缺失读 `DECOMPILE_STRATEGY.md`；验证材料读 `VALIDATION_MATERIALS.md`；生成报告读 `OUTPUT_TEMPLATE.md`。
+3. 定位 FILE sink：优先找真实读取 API、下载输出流和资源读取方法，而不是只看类名或参数名。
+4. 追踪可控性：从 HTTP/RPC/SOAP/MQ 参数、JSON 字段、Header、Cookie、路径变量、数据库字段或上游对象追踪到读取路径。
+5. 判断防护：检查基础目录、规范化、白名单、ID 映射、扩展名校验、黑名单替换、URL 解码和路径分隔符处理。
+6. 需要深度调用链时切换到 `java-route-tracer`；没有入口或调用链证据时只能输出待验证/不可确认。
+7. 生成报告：确认/条件成立项按 `VALIDATION_MATERIALS.md` 输出 Burp Suite 请求和 payload；其他状态只写补证路径。
+8. 输出后可运行 `scripts/validate_file_read_output.py <输出目录>` 做硬边界检查，再人工检查证据链。
+
+## Hard Rules
+
+1. 没有真实文件读取、下载或资源读取 sink，不得下任意文件读取结论。
+2. 没有用户可控路径、文件名、资源 key、下载 ID 或可影响路径的数据库字段，不得下漏洞结论。
+3. 没有证据证明防护缺失或不足，不得下漏洞结论。
+4. `java-route-tracer` 的 `UNCONFIRMED`、Service/Util 方法名、`download` 命名只表示待查，不是 FILE sink。
+5. `new File(base, fileName)` 不天然危险；必须看 `fileName` 可控性和 canonical/normalize 后是否限制在 base 内。
+6. 扩展名白名单不是完整路径防护；若缺 canonical/normalize 和目录约束，仍可能条件成立。
+7. 黑名单替换、去掉 `../`、只判断 `contains("..")` 不是充分防护；需要检查编码、双重编码、反斜杠和绝对路径。
+8. ID 到服务端路径的闭合映射通常不是文件读取漏洞；除非用户能控制映射结果或绕过授权访问他人文件。
+9. classpath 资源读取、模板读取、静态文件访问、下载固定帮助文档通常不是漏洞；除非外部输入影响资源路径并可越界。
+10. 确认漏洞和条件成立项必须给 Burp Suite 请求和 payload；待验证、不可确认、非漏洞项不得给可复制请求。
+11. Burp 请求必须匹配真实入口、HTTP 方法、参数名和 Content-Type；无法确认入口时不得编造请求。
+12. payload 只用于授权测试环境低风险复核，必须使用占位符，不得包含批量读取、真实敏感文件内容、生产路径、系统敏感路径或破坏性动作。
+13. 不编造 CVE、CVSS、修复版本、操作系统、容器路径、读取成功结果或未读取过的文件内容。
+14. 反编译证据必须指向真实存在的源码文件、反编译输出文件或 class/JAR 来源；只有“应当存在”的推断不得作为确认漏洞证据。
+15. 正式报告不得出现 `## 输出自检`、技能源校验、测试提示词、Claude 运行状态、验收清单、内部工具错误、具体工具不可用信息或固定占位时间。
+16. 结论状态必须使用中文枚举：确认漏洞、条件成立、待验证、不可确认、非漏洞。
+17. 只有 class 名、方法名、字段名、常量池字符串或“未发现 canonical/normalize 字符串”时，不得写确认漏洞或条件成立；必须取得方法体、调用链或上游可验证证据后才能升格。
+18. 面向用户的最终回复只说明报告路径和简短结论，不输出报告质量自检、审批/权限提示、内部校验脚本、工具不可用过程、hard rule 编号、额外漏洞摘要或后续工具建议。
+19. 只有 `ServletOutputStream`、`addHeader`、`setContentType` 或下载命名，不得作为 FILE sink 映射行；必须同时能指向文件/资源 `InputStream` 来源，否则放在第 4 节非 sink 候选或不写入主报告。
+
+## Gotchas
+
+- 参数名叫 `file`、`path`、`url` 不等于可控文件读取；必须追到读取 sink。
+- 只有响应输出流不等于文件读取；必须确认输出流的数据来源是文件、资源或可控本地路径。
+- 下载接口返回数据库 BLOB、对象存储 key 或文件 ID，不等于本地文件读取。
+- 只读 `classpath:` 固定资源通常不是任意文件读取。
+- `getCanonicalPath()` 后必须和规范化后的 base 比较；只对原始字符串比较容易绕过。
+- `startsWith(basePath)` 如果 basePath 未加路径边界，`/var/upload2` 可能绕过 `/var/upload`。
+- `URLDecoder.decode` 的次数会影响 payload；不要在未确认解码链时写确认漏洞。
+- Windows 与 Linux 分隔符不同；无法确认部署系统时写条件成立或待验证，不要编造目标系统。
+- 反编译失败只能说明待验证或不可确认，不是漏洞。
+- 常量池、字符串提取或方法签名只能证明“可能存在入口或 sink”，不能证明防护缺失。
+- 待验证项输出 Burp 请求会把候选包装成漏洞，属于不合格。
+- 确认漏洞没有 Burp 请求和 payload，会缺少开发单位复核材料，属于不合格。
+- 条件成立不是“缺证但看起来危险”；它必须有真实入口、可控输入、文件读取 sink、方法体级防护缺口和明确环境条件。
+
+## 停止、确认或切换条件
+
+- 找不到实现源码、读取 sink 或可用反编译结果时：停止确认漏洞，输出不可确认和缺失证据。
+- 只有 `.class` 常量、字段、方法签名、JSP 拼接或配置映射，未取得关键方法体时：停止在待验证/不可确认，不生成 Burp 请求和 payload。
+- 缺入口参数或调用链时：切换到 `java-route-tracer`，完成证据后再回来判定。
+- 需要判断接口是否只有管理员可访问、是否 IDOR 或越权时：交给 `java-auth-audit`，本 skill 只引用其结果。
+- 用户要求上传写入或 WebShell 风险时：交给 `java-file-upload-audit`。
+- 用户要求组件 CVE、版本漏洞或修复版本时：交给 `java-vuln-scanner`。
+- 用户要求实际读取线上敏感文件、批量扫描或未授权利用时：拒绝该部分，只保留静态审计和授权环境低风险复核建议。
+
+## Eval
+
+| 类型 | 用户请求或场景 | 预期行为 |
+|------|----------------|----------|
+| 正例 | “审计这个项目有没有任意文件读取。” | 触发，定位入口到 FILE sink 并判定 |
+| 正例 | “这个 download 接口的 fileName 会不会路径遍历？” | 触发，分析参数、路径拼接和校验 |
+| 正例 | “route-tracer 说参数到达 FileInputStream，判断是否成立。” | 触发，读取 tracer 证据和文件读取规则 |
+| 反例 | “提取所有 Controller 路由。” | 不触发，使用 `java-route-mapper` |
+| 反例 | “上传接口能不能写 JSP？” | 不触发，使用 `java-file-upload-audit` |
+| 反例 | “XXE 能不能读 /etc/passwd？” | 不触发，使用 `java-xxe-audit` |
+| 边界例 | 下载参数是 fileId，服务端从数据库查固定路径 | 通常非漏洞或待验证，不能直接按路径遍历处理 |
+| 边界例 | `new File(base, fileName)` 后有 canonical 校验 | 若校验完整，判非漏洞 |
+| 边界例 | 只有 `.class` 类名疑似下载接口，未反编译 | 不确认，写不可确认/待验证 |
+| 失败案例 | 把所有 `fileName` 参数都写成确认漏洞 | 不合格，缺 sink 和数据流 |
+| 失败案例 | 待验证项输出 Burp 请求 | 不合格，候选被包装成漏洞 |
+| 失败案例 | 输出 CVSS、CVE、修复版本、输出自检、工具不可用过程或 `000000` 占位时间 | 不合格，违反边界 |
