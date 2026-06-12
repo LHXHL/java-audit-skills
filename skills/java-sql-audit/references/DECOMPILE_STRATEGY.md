@@ -1,434 +1,110 @@
-# SQL 注入审计反编译策略指南
+# SQL 审计反编译策略
 
-## 目录
+源码缺失、只有 `.class/.jar/.war` 或上游调用链停在接口/Manager/DAO 名称时加载本文件。目标是补足 SQL 实现证据，不是全量反编译项目。
 
-- [何时反编译](#何时反编译)
-- [反编译工具使用](#反编译工具使用)
-- [SQL 相关类识别与定位](#sql-相关类识别与定位)
-- [反编译结果提取](#反编译结果提取)
-- [常见故障](#常见故障)
+通用反编译工具选择、CFR 获取方式和失败处理可参考 `../java-shared/DECOMPILE_STRATEGY.md`。本文件只描述 SQL 审计的目标选择和证据记录。
 
----
+## 何时需要反编译
 
-## 何时反编译
+必须考虑反编译：
 
-### 必须反编译的场景
+- `java-route-tracer` 只追踪到 `Manager`、`DAO`、`Repository`、`Mapper` 接口或 `UNCONFIRMED` sink。
+- 源码中缺少实现类，但 `WEB-INF/classes`、`BOOT-INF/classes`、`target/classes`、`build/classes` 中存在字节码。
+- SQL 构造逻辑在第三方业务 jar、内部公共 DAO jar 或部署包中。
+- 需要确认 MyBatis Provider、Hibernate Repository、自定义 BaseDao 的真实实现。
 
-1. **项目只有编译后的字节码**
-   - WAR/JAR 包部署，无源码
-   - 第三方依赖中的 DAO 组件
+不需要反编译：
 
-2. **SQL 相关类定义在 .class 文件中**
-   - 自定义 DAO/Mapper 类
-   - SQL 工具类
-   - 数据访问层实现
+- 源码、Mapper XML 或注解实现已经可读。
+- 只缺少框架核心类，例如 Hibernate/MyBatis/JDBC 标准库。
+- 当前任务只做路由枚举或调用链追踪，不做 SQL 判定。
 
-3. **需要提取 SQL 拼接点**
-   - 动态 SQL 构建
-   - SQL 拼接逻辑
-   - 参数处理方式
+## 目标优先级
 
-### 不需要反编译的场景
+| 优先级 | 目标 | 原因 |
+|--------|------|------|
+| P0 | 上游调用链直接命中的实现类 | 最可能决定当前结论 |
+| P0 | Mapper XML 和 Provider 类 | MyBatis SQL 常在这里 |
+| P1 | `*Dao*`、`*Repository*`、`*Mapper*`、`*ManagerImpl*` | 常见 SQL 执行层 |
+| P1 | `BaseDao`、`AbstractDao`、`JdbcSupport`、`SqlBuilder` | 通用拼接和执行封装 |
+| P2 | Service/Manager 实现 | 补足参数处理、白名单、默认值覆盖 |
+| P2 | Entity/Model | 仅在 Hibernate/JPA 映射不清时读取 |
 
-1. 源码已存在且可读取
-2. 标准框架类（MyBatis/Hibernate 核心类）
-3. Mapper XML 配置文件可直接读取
+## 定位方法
 
----
-
-## 反编译工具使用
-
-### CFR CLI 反编译器
-
-> 详细的 CFR 获取策略和通用调用方式参见 `java-shared/DECOMPILE_STRATEGY.md`。
-
-#### 单个文件反编译
+先用轻量搜索定位候选，不要一上来全量反编译：
 
 ```bash
-# 反编译单个 DAO/Mapper 类
-java -jar {CFR_JAR} /path/to/WEB-INF/classes/com/example/dao/UserDao.class --outputdir {output_path}/decompiled
-```
-
-#### 目录反编译
-
-```bash
-# 递归反编译整个 DAO 包
-find /path/to/WEB-INF/classes/com/example/dao -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
-
-#### 批量文件反编译
-
-```bash
-# 反编译多个指定的 SQL 相关类
-java -jar {CFR_JAR} /path/to/UserDao.class /path/to/OrderMapper.class /path/to/SqlHelper.class /path/to/BaseRepository.class --outputdir {output_path}/decompiled
-```
-
-#### 检查 Java 环境
-
-```bash
-# 检查 Java 版本（反编译需要）
-java -version
-
-# 验证 CFR 是否可用
-java -jar {CFR_JAR} --help
-
-# 如果 CFR 不存在，下载
-curl -L -o {output_path}/cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
-```
-
----
-
-## SQL 相关类识别与定位
-
-### 按框架定位
-
-#### JDBC 相关类
-
-```bash
-# 查找导入 java.sql 的类
-find . -name "*.class" | xargs strings | grep -l "java.sql"
-
-# 常见类名模式
-*Dao.class
-*DaoImpl.class
-*JdbcTemplate*.class
-*DbHelper*.class
-*SqlUtil*.class
-```
-
-**反编译目标：**
-```python
-jdbc_classes = [
-    "*Dao.class",
-    "*DaoImpl.class",
-    "*JdbcTemplate*.class",
-    "*DbHelper*.class"
-]
-```
-
-#### MyBatis 相关类
-
-```bash
-# 查找 Mapper 类
-find . -name "*Mapper.class" -o -name "*MapperImpl.class"
-
-# 常见类名模式
-*Mapper.class
-*MapperImpl.class
-*SqlProvider.class
-```
-
-**反编译目标：**
-```python
-mybatis_classes = [
-    "*Mapper.class",
-    "*MapperImpl.class",
-    "*SqlProvider.class"
-]
-```
-
-**同时检查 XML 文件：**
-```bash
-# Mapper XML 不需要反编译，直接读取
+rg -n "class .*Dao|class .*Repository|class .*ManagerImpl|interface .*Mapper" .
+find . -name "*Dao.class" -o -name "*Repository.class" -o -name "*Mapper.class" -o -name "*ManagerImpl.class"
 find . -name "*Mapper.xml" -o -name "*Dao.xml"
 ```
 
-#### Hibernate 相关类
-
-```bash
-# 查找 Repository/DAO 类
-find . -name "*Repository*.class" -o -name "*Dao.class"
-
-# 常见类名模式
-*Repository.class
-*RepositoryImpl.class
-*Dao.class
-*DaoImpl.class
-*Entity.class
-```
-
-**反编译目标：**
-```python
-hibernate_classes = [
-    "*Repository.class",
-    "*RepositoryImpl.class",
-    "*Dao.class",
-    "*DaoImpl.class"
-]
-```
-
-### 按配置文件定位
-
-#### 从 Spring 配置定位
-
-```xml
-<!-- applicationContext.xml -->
-<bean id="userDao" class="com.example.dao.UserDaoImpl"/>
-```
-
-**提取类路径：** `com.example.dao.UserDaoImpl`
-**对应 class 文件：** `WEB-INF/classes/com/example/dao/UserDaoImpl.class`
-
-#### 从 MyBatis 配置定位
-
-```xml
-<!-- mybatis-config.xml -->
-<mappers>
-    <mapper resource="mapper/UserMapper.xml"/>
-    <package name="com.example.mapper"/>
-</mappers>
-```
-
----
-
-## 反编译结果提取
-
-### JDBC 类识别要点
-
-```java
-// 反编译后的 UserDao 示例
-public class UserDao {
-
-    private DataSource dataSource;
-
-    // ⚠️ 关注点 1: SQL 字符串构建
-    public User findById(String id) {
-        // ❌ 危险：字符串拼接
-        String sql = "SELECT * FROM users WHERE id = " + id;
-
-        Connection conn = dataSource.getConnection();
-        Statement stmt = conn.createStatement();
-        ResultSet rs = stmt.executeQuery(sql);
-        // ...
-    }
-
-    // ⚠️ 关注点 2: 安全的预编译
-    public User findByIdSafe(String id) {
-        // ✅ 安全：使用 PreparedStatement
-        String sql = "SELECT * FROM users WHERE id = ?";
-        PreparedStatement pstmt = conn.prepareStatement(sql);
-        pstmt.setString(1, id);
-        ResultSet rs = pstmt.executeQuery();
-        // ...
-    }
-
-    // ⚠️ 关注点 3: 动态 SQL 构建
-    public List<User> search(Map<String, String> params) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM users WHERE 1=1");
-
-        // ❌ 危险：动态拼接
-        if (params.get("name") != null) {
-            sql.append(" AND name = '" + params.get("name") + "'");
-        }
-        // ...
-    }
-}
-```
-
-**提取信息：**
-
-| 方法名 | SQL 构建方式 | 注入判定 |
-|--------|------------|---------|
-| findById | 字符串拼接 | **高危注入点** |
-| findByIdSafe | PreparedStatement | 安全 |
-| search | 动态 StringBuilder | **高危注入点** |
-
-### MyBatis Mapper 类检查要点
+从配置中定位类：
 
-```java
-// 反编译后的 UserMapper 示例
-@Mapper
-public interface UserMapper {
+- Spring XML `<bean class="com.example.SomeClass">`
+- MyBatis `<mapper resource="mapper/UserMapper.xml">`、`<package name="com.example.mapper">`
+- Spring Boot `mapper-locations`
+- JPA repository package 配置
+- WebService/Servlet/Controller 调用链中的实际实现类
 
-    // ⚠️ 关注点 1: ${} 使用
-    @Select("SELECT * FROM users WHERE id = ${id}")
-    User findById(String id);  // ❌ 危险
+## 反编译范围控制
 
-    // ⚠️ 关注点 2: #{} 使用
-    @Select("SELECT * FROM users WHERE name = #{name}")
-    User findByName(String name);  // ✅ 安全
+推荐顺序：
 
-    // ⚠️ 关注点 3: 动态 ORDER BY
-    @Select("SELECT * FROM users ORDER BY ${orderBy}")
-    List<User> findAll(String orderBy);  // ❌ 危险
-}
-```
+1. 只反编译当前入口调用链上的 1 到 3 个候选实现类。
+2. 如果实现类调用公共 DAO/BaseDao，再补充反编译该公共类。
+3. 如果 SQL 由 Provider/Builder 构造，再补充反编译 Provider/Builder。
+4. 若仍找不到 SQL sink，记录“实现未确认”，不要扩大为确认漏洞。
 
-### Hibernate Repository 检查要点
+避免：
 
-```java
-// 反编译后的 UserRepository 示例
-@Repository
-public class UserRepositoryImpl implements UserRepository {
+- 无条件反编译整个依赖目录。
+- 因类名包含 `Dao` 就批量输出漏洞。
+- 在反编译失败时编造源码行号或 SQL 语句。
 
-    @PersistenceContext
-    private EntityManager em;
+## 证据记录
 
-    // ⚠️ 关注点 1: HQL 拼接
-    public User findByUsername(String username) {
-        // ❌ 危险：HQL 拼接
-        String hql = "FROM User WHERE username = '" + username + "'";
-        return em.createQuery(hql, User.class).getSingleResult();
-    }
+报告中必须标注反编译来源：
 
-    // ⚠️ 关注点 2: 参数绑定
-    public User findByUsernameSafe(String username) {
-        // ✅ 安全：参数绑定
-        String hql = "FROM User WHERE username = :username";
-        return em.createQuery(hql, User.class)
-                 .setParameter("username", username)
-                 .getSingleResult();
-    }
+| 项目 | 写法 |
+|------|------|
+| 来源文件 | `来源：反编译 WEB-INF/classes/com/acme/UserDao.class` |
+| 行号 | 有行号写反编译文件行号；无行号写“反编译结果无可靠源码行号” |
+| 可信度 | 说明是否存在混淆、反编译失败、注解缺失 |
+| 限制 | 缺少依赖、接口未解析、多态实现不完整时明确标注 |
 
-    // ⚠️ 关注点 3: Native SQL
-    public User findByIdNative(Long id) {
-        // ❌ 危险：Native SQL 拼接
-        String sql = "SELECT * FROM users WHERE id = " + id;
-        return (User) em.createNativeQuery(sql, User.class).getSingleResult();
-    }
-}
-```
+证据路径必须真实存在，或能明确指向已读取的 class/jar 来源。禁止写不存在的 `decompiled` 路径作为证据。若只看到 class 文件但未成功反编译，实现证据仍为缺失，结论应为“不可确认”。
 
----
+## SQL 证据提取
 
-## 反编译策略
+反编译后优先提取：
 
-### 策略 1: 最小化反编译（推荐）
+- SQL 字符串常量和拼接位置。
+- 执行 API：`executeQuery`、`executeUpdate`、`JdbcTemplate`、`createQuery`、`createNativeQuery`。
+- MyBatis 注解：`@Select`、`@Update`、`@Insert`、`@Delete`、`@*Provider`。
+- Provider/Builder 的参数来源和返回 SQL。
+- 白名单、枚举、Map 映射、强类型转换。
+- 数据库类型分支、早返回、异常路径。
 
-```bash
-# 只反编译与 SQL 直接相关的类
+## 失败处理
 
-# 步骤 1: 从配置文件识别 DAO/Mapper 类，然后反编译
-find {classes_path} \( -name "*Dao.class" -o -name "*Mapper.class" -o -name "*Repository.class" \) | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
+| 情况 | 处理 |
+|------|------|
+| 找不到 class/jar | 记录缺失实现，不下漏洞结论 |
+| 反编译失败 | 记录工具错误和受影响类，结论降为不可确认 |
+| 代码混淆 | 只引用可确认 SQL/API 片段，不推断业务含义 |
+| 注解丢失 | 回查 Mapper XML、配置或运行时元数据；仍缺失则不可确认 |
+| 多个实现类 | 分别列出已确认和未确认实现，不混成一个结论 |
+| 只反编译到相邻类 | 不能按相邻类风格推断目标类安全，目标类仍为不可确认 |
+| 反编译文件路径不存在 | 删除该证据或改为 class/jar 候选；不得作为确认漏洞依据 |
 
-# 步骤 2: 阅读反编译结果，识别需要进一步分析的 SQL 相关依赖
+## 与 `UNCONFIRMED` 的关系
 
-# 步骤 3: 按需反编译依赖类
-java -jar {CFR_JAR} {classes_path}/com/example/util/SqlHelper.class --outputdir {output_path}/decompiled
-```
+如果上游 `java-route-tracer` 把 sink 标为 `UNCONFIRMED`，本 skill 必须先完成以下任一项后才能判 SQL 注入：
 
-### 策略 2: 层级反编译
+- 找到源码实现并确认 SQL sink。
+- 找到 Mapper XML/注解并确认 statement。
+- 找到反编译实现并确认 SQL sink。
 
-```bash
-# 第一层: 反编译 DAO/Mapper
-find {classes_path} \( -name "*Dao.class" -o -name "*Mapper.class" -o -name "*Repository.class" \) | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 第二层: 反编译 Service（追踪调用链）
-find {classes_path} \( -name "*Service.class" -o -name "*ServiceImpl.class" \) | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 第三层: 反编译工具类
-find {classes_path} \( -name "*SqlUtil*.class" -o -name "*DbHelper*.class" -o -name "*SqlBuilder*.class" \) | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
-
-### 策略 3: 按包反编译
-
-```bash
-# 当 SQL 类集中在特定包下
-find {classes_path}/com/example/dao -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-find {classes_path}/com/example/mapper -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-find {classes_path}/com/example/repository -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
-
----
-
-## 常见故障
-
-### 故障 1: 反编译失败
-
-**可能原因：**
-- Java 版本不匹配
-- 代码被混淆
-- class 文件损坏
-
-**解决方案：**
-```bash
-# 检查 Java 版本
-java -version
-
-# 验证 CFR 是否可用
-java -jar {CFR_JAR} --help
-
-# 如果 CFR 不存在，下载
-curl -L -o {output_path}/cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
-```
-
-### 故障 2: MyBatis 注解丢失
-
-**表现：**
-```java
-// 反编译后注解可能被保留
-@Select("SELECT * FROM users")  // 通常保留
-@Mapper  // 通常保留
-```
-
-**说明：**
-- 运行时注解通常被保留
-- 编译时注解可能丢失
-- 需结合 XML 配置文件分析
-
-### 故障 3: 泛型信息丢失
-
-**表现：**
-```java
-// 原始
-List<User> users = findAll();
-
-// 反编译后
-List users = findAll();
-```
-
-**影响：**
-- 不影响 SQL 注入分析
-- 可通过使用上下文推断类型
-
----
-
-## 反编译结果记录
-
-输出时必须标注反编译来源：
-
-```markdown
-=== [SQL-001] SQL 注入 - 字符串拼接 ===
-风险等级: 高
-位置: UserDao.findById (UserDao.java:25)
-来源: **反编译 WEB-INF/classes/com/example/dao/UserDao.class**
-框架: JDBC
-
-漏洞特征:
-- 使用字符串拼接构建 SQL
-- 参数 id 直接拼接到查询语句
-
-漏洞代码:
-\```java
-String sql = "SELECT * FROM users WHERE id = " + id;
-Statement stmt = conn.createStatement();
-ResultSet rs = stmt.executeQuery(sql);
-\```
-```
-
----
-
-## 性能优化
-
-### 批量操作
-
-```bash
-# 一次性反编译多个文件，减少启动开销
-java -jar {CFR_JAR} file1.class file2.class file3.class --outputdir {output_path}/decompiled
-```
-
-### 目录级批量处理
-
-```bash
-# 反编译整个 DAO 包
-find {classes_path}/com/example/dao -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 如果文件数量过多，使用分批处理
-find {classes_path} -name "*.class" | xargs -L 50 java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
-
-### 缓存利用
-
-- 反编译结果保存在 `{output_path}/decompiled/` 目录下
-- 再次分析时先检查是否已存在反编译结果
-- 避免重复反编译相同的类
+若三者都没有，输出“不可确认：缺少 SQL 实现证据”，不得写“疑似 SQL 注入已确认”。
