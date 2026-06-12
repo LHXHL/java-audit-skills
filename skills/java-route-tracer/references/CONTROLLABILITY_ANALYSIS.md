@@ -18,7 +18,7 @@
 
 | Sink 类型 | 典型代码 | 下游 |
 |-----------|----------|------|
-| SQL | JDBC `Statement`、`PreparedStatement`、MyBatis `${}`、HQL/JPQL/native SQL 拼接、Mapper XML | `java-sql-audit` |
+| SQL | JDBC `Statement`、`PreparedStatement`、Hibernate/JPA Criteria、MyBatis `${}` / `#{}`、HQL/JPQL/native SQL、Mapper XML | `java-sql-audit` |
 | FILE_READ | `FileInputStream`、`Files.read*`、`FileReader`、下载流 | `java-file-read-audit` |
 | FILE_WRITE | `MultipartFile.transferTo`、`FileItem.write`、`Files.write`、上传保存 | `java-file-upload-audit` |
 | XML | `DocumentBuilder.parse`、`SAXReader.read`、`XMLInputFactory`、`Unmarshaller` | `java-xxe-audit` 或反序列化审计 |
@@ -41,13 +41,13 @@
 | 结论 | 使用场景 | 报告写法 |
 |------|----------|----------|
 | 完全可控 | Source 未被覆盖或限制，原值或等价值到达 sink | `完全可控` |
-| 条件可控 | 需要满足分支、非空、角色、配置开关、类型等条件才到达 sink | `条件可控: 条件...` |
-| 受限可控 | 只允许白名单、枚举、数值范围、固定目录内文件名等有限值 | `受限可控: 限制...` |
+| 条件可控 | 需要满足分支、非空、角色、配置开关、类型等条件才到达 sink | `条件可控: 仅当 status=enabled` |
+| 受限可控 | 只允许白名单、枚举、数值范围、固定目录内文件名等有限值 | `受限可控: 仅允许 id/name` |
 | 不可控 | 到达 sink 的值由服务端常量、配置、数据库固定值或无条件覆盖决定 | `不可控` |
-| 未确认 | 源码缺失、反射目标不明、反编译失败或配置缺失导致无法判断 | `未确认: 原因...` |
+| 未确认 | 源码缺失、反射目标不明、反编译失败或配置缺失导致无法判断 | `未确认: 反射目标缺失` |
 | 无敏感 Sink | 参数未到达本 skill 关注的 sink | `无敏感 Sink` |
 
-不要把“完全可控”直接写成“漏洞成立”。漏洞成立还需要专项规则、上下文和防护检查。
+不要把“完全可控”直接写成“漏洞成立”，也不要把“参数化/白名单/校验”写成“漏洞不成立”。漏洞判断需要专项规则、上下文和防护检查。
 
 ## 4. 判定步骤
 
@@ -125,7 +125,8 @@ sink 位置必须包含可验证代码证据：
 
 - `StringUtils.defaultIfBlank(input, "id")` 不是无条件覆盖；非空输入仍可控。
 - `Integer.parseInt(input)` 会限制为数字，通常不是 SQL 标识符注入，但仍可能影响业务条件。
-- `PreparedStatement` 仍是 SQL sink，但参数化限制必须写清，不能省略给 SQL 审计。
+- `PreparedStatement`、Hibernate Criteria、MyBatis `#{}` 仍是 SQL sink，但参数化限制必须写清，不能省略给 SQL 审计；不要替 SQL 审计下“注入不成立”结论。
+- ORM Criteria 或参数化 API 没有显式 SQL 字符串时，不得补写推测的 `SELECT`、表名或列名；只引用实际 API 调用和参数绑定关系。
 - `Manager.save()`、`Dao.query()` 不是 SQL sink 证据；必须读到实现或 Mapper。
 - `Map<String,Object>`、`JSONObject`、`BeanUtils.populate` 会隐藏字段名，需要追字段访问点。
 - `request.getParameterMap()`、Struts action 字段、Spring binder 都可能让参数进入对象属性。

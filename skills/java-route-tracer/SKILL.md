@@ -1,6 +1,6 @@
 ---
 name: java-route-tracer
-description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline 批次追踪参数调用链到 SQL/FILE/XML/COMMAND/HTTP/LDAP/EXPRESSION/DESERIALIZE/RESPONSE 等 sink，并输出可控性、分支条件和证据时使用；只提取路由、判断具体漏洞、鉴权审计或依赖 CVE 扫描时不要使用。
+description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline 批次追踪参数调用链到 SQL/FILE/XML/COMMAND/HTTP/LDAP/EXPRESSION/DESERIALIZE/RESPONSE 等 sink，并输出可控性、分支条件和证据时使用；只提取路由、判断具体漏洞、鉴权审计或依赖组件风险扫描时不要使用。
 ---
 
 # Java Route Tracer
@@ -32,7 +32,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - `java-deserialization-audit`
 - `java-audit-pipeline` 阶段4的 agent-6x
 
-## 何时触发
+## 触发条件
 
 用户意图包含以下任一项时触发：
 
@@ -42,6 +42,8 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - 需要为 SQL/XXE/上传/文件读取/反序列化等专项审计准备可复用调用链证据。
 - pipeline 中 `agent-5-N` 被分配一批高危路由，需要生成 `route_tracer/` 报告。
 
+必须存在明确边界：具体路由、入口类方法、route mapper 条目、trace batch、用户点名的参数/sink，或用户明确限定的少量入口集合。只给项目路径并说“找可定位入口”“全项目追踪”“所有调用链”时，不要自行展开。
+
 典型说法：
 
 - “追踪 `/api/order/list` 的 `pageJson.orderBy` 到 SQL 执行点。”
@@ -50,15 +52,16 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - “只看调用链和可控性，不要先判漏洞。”
 - “agent-5-2 处理 trace_batch_plan 里的这些路由。”
 
-## 何时不触发
+## 不触发条件
 
 相似但不应触发的任务：
 
 - 只要求提取全部路由、参数或 WebService 方法清单：使用 `java-route-mapper`。
 - 只要求判断 SQL 注入、XXE、上传、文件读取或反序列化漏洞是否成立：使用对应专项 skill；本 skill 可作为其上游证据。
 - 只要求鉴权覆盖、越权、认证绕过：使用 `java-auth-audit`。
-- 只扫描依赖版本和 CVE：使用 `java-vuln-scanner`。
+- 只扫描依赖版本和组件风险：使用 `java-vuln-scanner`。
 - 用户没有给出路由、入口方法、route mapper 输出或可定位范围，只说“分析整个项目所有调用链”：先切换到 route mapper 或要求明确范围。
+- 用户只给源码路径并要求“选择可定位入口”或“尽量追踪”：不生成全量报告，先要求用户指定入口或 route mapper 批次。
 - 纯内部方法、定时任务、MQ/RPC 入口的追踪，除非用户明确要求把它作为非 HTTP 入口证据；默认不把它伪装成 Web 路由。
 
 边界例：
@@ -79,9 +82,16 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - sink 类型、sink 位置、参数到达关系、可控性结论和分支条件清楚。
 - pipeline 输入中带有鉴权状态时，报告必须原样透传；未提供时明确写“未提供”，不得自行鉴权。
 - 不把“参数到达危险 sink”写成“漏洞已确认”；漏洞结论交给下游专项 skill。
-- 输出文件不含 `【填写】`、`${...}`、`...` 省略占位或臆造代码位置。
+- 参数化 SQL、Hibernate Criteria、MyBatis `#{}` 仍应记录为 SQL sink 或 SQL 相关 sink，并把参数化写成 Guard/限制；不得写“无敏感 sink”或“风险极低”替代证据。
+- 不得写“注入不成立”“漏洞不存在”“无风险”等专项结论；只能写“观察到参数化绑定/白名单/校验等限制，交下游专项判断”。
+- 不扩大到密码策略、传输加密、组件版本、配置基线等非调用链发现；必要时只在“仍需确认”中写交接方向。
+- 不扩展到当前入口调用链之外的同类方法、同 DAO 其他方法或相邻接口；发现旁路候选时只写“超出本次入口范围，未分析”。
+- 对 Hibernate/JPA Criteria、ORM API 或 Mapper 方法，只能引用实际读到的 API 调用、Mapper XML 或 SQL 字符串；没有看到生成后的 SQL 时，不得补写等价 SQL、表名、列名或 `SELECT` 语句。
+- 下游交接只围绕当前链路命中的 sink；没有上游鉴权证据或用户点名时，不把 filter、拦截器、传输加密、密码策略、登录锁定等认证基线写入 `java-auth-audit` 交接。
+- 输出文件不含 `【填写】`、`${...}`、`...` 省略占位、输出自检、测试提示词或臆造代码位置。
 - 如果只追到 Manager/Service/DAO 接口调用，但实现类源码或反编译结果缺失，不得把该调用推断成 SQL/FILE/XML 等 sink；只能标记为 `UNCONFIRMED` 并列入“仍需确认”。
-- 每个报告文件本身必须包含 `## 输出自检` 章节；终端最终响应里的自检不能替代文件内自检。
+- 报告只包含模板定义的业务章节；不得添加输出自检、模型验收、技能源校验或测试过程说明。
+- 面向用户的最终对话回复最多两行：报告路径或索引路径 + `调用链追踪报告已生成，详见报告。`；不得输出验证通过、QA 摘要、漏洞摘要或关键发现列表。
 
 ## 输入与模式判断
 
@@ -94,7 +104,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 | Pipeline worker | prompt 中出现 `agent-5-N`、`trace_batch_plan`、`batch_id`、已创建输出目录 | 只处理本批次路由，只写指定 `route_tracer/` 子目录 |
 | Evidence refresh | 用户要求复查某个旧报告 | 读取旧报告与源码，更新该路由报告并标注变化 |
 
-如果缺少源码路径、输出目录或入口定位信息，且无法从当前仓库或 route mapper 输出推导，先停止并要求补齐。不要自行扩大到全项目扫描。
+如果缺少源码路径、输出目录或入口定位信息，且无法从当前仓库或 route mapper 输出推导，先停止并要求补齐。不要自行扩大到全项目扫描；不要为了“找几个例子”枚举整个项目。
 
 ## 工作流
 
@@ -105,7 +115,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 5. 标记 sink 类型与位置。sink 类型和可控性判定按 `references/CONTROLLABILITY_ANALYSIS.md`。
 6. 分析参数覆盖、校验、白名单、黑名单、规范化、提前返回和异常路径。
 7. 分支条件按 `references/BRANCH_TRACING.md` 输出到报告。
-8. 按模板写入报告和索引文件，并执行输出自检。
+8. 按模板写入报告和索引文件；可运行 `scripts/validate_route_tracer_output.py <输出目录>` 做格式和边界检查，检查结果只用于内部修正，不写入报告。
 
 ## 按需读取的 references
 
@@ -115,8 +125,8 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - 完整报告模板：`references/OUTPUT_TEMPLATE_FULL.md`
 - 简化报告模板：`references/OUTPUT_TEMPLATE_SIMPLE.md`
 - 多方法索引模板：`references/OUTPUT_TEMPLATE_INDEX.md`
+- 输出边界检查：`scripts/validate_route_tracer_output.py`
 - 需要反编译：`../java-shared/DECOMPILE_STRATEGY.md`
-- 通用输出规范：`../java-shared/OUTPUT_STANDARD.md`
 
 ## Hard Rules
 
@@ -131,9 +141,9 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 禁止写：
 
 - “确认 SQL 注入高危漏洞。”
-- “CVSS 9.8。”
-- “可直接 RCE。”
-- 没有下游专项审计支持的 PoC、payload 或修复版本。
+- “可直接打穿。”
+- “已完成漏洞验证。”
+- 没有下游专项审计支持的复现请求、攻击字符串或修复版本。
 
 ### 2. 入口必须真实可达
 
@@ -167,6 +177,10 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 
 如果上游批次提供鉴权状态、P0/P1/P2 分级或鉴权绕过编号，报告中原样写入并注明来源。若没有上游信息，写“未提供上游鉴权信息”。不得自行判断无鉴权、越权或绕过。
 
+不要把传输加密、密码存储、WS-Security 开关、登录限速、账户锁定、Filter 覆盖等认证安全基线作为本 skill 的发现；没有上游鉴权证据时只写“未提供上游鉴权信息”，不主动分析 filter chain。
+
+如果在定位入口时顺手看到认证/过滤配置，只用于确认入口映射是否真实存在；不要评价其安全含义，不要写入“已确认事实”“建议下游 skill”或“仍需确认”。
+
 ### 6. Pipeline worker 隔离
 
 在 `agent-5-N` 模式下：
@@ -177,15 +191,24 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - 不修改 route mapper、auth audit、vuln report、专项漏洞报告或其他 worker 目录。
 - 发现批次输入无法定位时，写失败原因和未完成清单，不自行替换路由。
 
-### 7. 反编译最小化
+### 7. 范围上限
+
+- Standalone 模式一次最多处理用户明确点名的一个路由/入口；用户给出少量清单时才批量处理。
+- 用户只给项目路径、模块名或“可定位入口”时，不要自动枚举所有 Struts Action、WebService operation 或 REST 方法。
+- 需要全量覆盖时，先交给 `java-route-mapper` 生成清单，再由 pipeline 或用户提供批次。
+- 如果发现本次任务会生成大量报告或超过上下文窗口，停止并写清需要拆分的批次，不继续写半成品。
+- 不要因为读到同一个 DAO/Manager 类中的其他方法，就把它们写入当前入口的下游交接；除非它们在当前调用链中真实可达。
+
+### 8. 反编译最小化
 
 源码完整时优先读源码。只有入口、实现类、Mapper、工具方法或 sink 位于 class/JAR 且源码不可读时，才按共享反编译策略最小化反编译相关类。报告中必须标注反编译来源和限制。
 
-### 8. Sink 必须有代码证据
+### 9. Sink 必须有代码证据
 
 只有看到真实危险 API、Mapper XML、注解 SQL、框架调用或反编译代码时，才能写具体 sink 类型：
 
 - 看到 `Statement.execute`、MyBatis `${}`、HQL/native SQL 拼接，才能写 `SQL`。
+- 看到 Hibernate Criteria、JPA Criteria、`PreparedStatement`、MyBatis `#{}` 等参数化查询时，也写 `SQL`，并在 Guard/限制说明中标注参数化绑定。
 - 看到 `Files.read*`、`FileInputStream`、`transferTo`、`FileItem.write`，才能写文件类 sink。
 - 看到 XML parser、反序列化 API、命令执行、HTTP client、LDAP、表达式执行等真实调用，才能写对应 sink。
 
@@ -212,13 +235,14 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - “无敏感 sink”也是有效结论，但必须说明扫描到哪里以及为什么认为未到达 sink。
 - Manager/DAO 方法名不是 sink 证据；看不到实现时，宁可写 `UNCONFIRMED`，不要猜 SQL/Hibernate。
 - 请求模板中不要使用 `${param}` 变量格式；模板占位只允许 `{{param}}`，安全样例请求必须填入实际低风险值。
-- 报告文件必须把自检清单写入文件尾部；只在 Claude 终端回复里说“自检通过”不合格。
+- 报告不要写模型自检、检查清单或测试验收信息；这些内容只属于本地验收记录。
 
 ## 停止、确认或切换条件
 
 - 缺少源码路径且当前环境无法访问时，停止询问。
 - 用户只给项目路径但要求全量路由调用链，先切换到 `java-route-mapper` 或要求提供 route mapper 输出。
-- 用户要求漏洞判定、风险评级、PoC 或修复建议时，先完成必要调用链证据，再切换到对应专项 skill。
+- 用户只要求“选择可定位入口追踪”但未指定入口时，停止并要求具体路由、入口方法或批次；不要自行全量展开。
+- 用户要求漏洞判定、风险评级、复现材料或修复建议时，先完成必要调用链证据，再切换到对应专项 skill。
 - 批次路由数量明显超出单 worker 可完成范围时，记录待拆分建议，等待负责人重新分批。
 - 入口定位和源码实现冲突时，以源码和部署配置为准，并在报告中说明 route mapper 可能过期。
 
@@ -240,7 +264,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 | “提取项目所有接口和参数。” | 不触发 | route mapper 职责 |
 | “判断这个接口是否 SQL 注入。” | 不直接触发 | 应由 SQL audit 下结论 |
 | “检查 Shiro 配置有没有绕过。” | 不触发 | auth audit 职责 |
-| “pom 里有没有 Log4j CVE？” | 不触发 | vuln scanner 职责 |
+| “pom 里有没有 Log4j 组件风险？” | 不触发 | vuln scanner 职责 |
 
 ### 边界例
 
@@ -259,3 +283,8 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 | 把所有 public WebService 方法都当接口 | 多报入口 | 按配置、接口或注解确认暴露 operation |
 | 参数被默认值覆盖仍写完全可控 | 误导专项审计 | 按覆盖条件重新判定 |
 | pipeline 报告自行写无鉴权 | 越界 | 只透传上游鉴权信息 |
+| 用户只给项目路径时自动生成大量调用链报告 | 失控和污染输出 | 停止并要求具体入口或 route mapper 批次 |
+| 参数化查询写成无敏感 sink | 下游丢失 SQL 证据 | 记录为 SQL sink，并把参数化作为限制 |
+| 把密码明文、WS-Security、限速等写成关键发现 | 越界到认证/配置基线 | 只保留调用链相关事实，必要时交给 auth 或配置审计 |
+| 顺手分析同 DAO 其他 SQL 拼接方法 | 污染当前入口证据 | 删除旁路发现，只保留当前入口真实可达链 |
+| 将 ORM Criteria 改写成具体 SELECT | 编造未观察到的 SQL | 只写 `Restrictions.eq(...)` 和 `findByCriteria(...)` 等真实 API |
