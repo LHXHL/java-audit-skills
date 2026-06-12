@@ -1,402 +1,285 @@
-# XML 解析器 XXE 审计详解
+# XML 解析器 XXE 审计规则
 
-## 目录
+本文件用于 `java-xxe-audit` 已触发后加载。结论必须回到真实项目证据：入口或输入来源、XML 解析 sink、防护配置、执行路径和限制说明。
 
-- [1. XMLReader](#1-xmlreader)
-- [2. SAXBuilder (JDOM2)](#2-saxbuilder-jdom2)
-- [3. SAXReader (dom4j)](#3-saxreader-dom4j)
-- [4. SAXParserFactory](#4-saxparserfactory)
-- [5. DocumentBuilderFactory](#5-documentbuilderfactory)
-- [6. 其他 XML 组件](#6-其他-xml-组件)
-- [7. 通用审计要点](#7-通用审计要点)
+## 证据模型
 
----
+| 证据 | 必须回答的问题 | 不足时结论 |
+|------|----------------|------------|
+| XML 输入来源 | XML 是否来自 HTTP/SOAP/RPC/MQ/上传/数据库外部字段 | 待验证或不可确认 |
+| 解析 sink | 具体哪个 parser/transformer/unmarshaller 执行解析 | 不得下 XXE 结论 |
+| 防护配置 | 是否在实际 parser/factory 上禁用 DOCTYPE 或外部实体 | 不得下确认漏洞 |
+| 执行路径 | 输入是否能到达该解析器，分支是否成立 | 待验证或不可确认 |
+| 入口地址 | Web/SOAP/MQ 入口是否来自配置、注解、WSDL 或 route-mapper 证据 | 入口写“未确认”，不得按类名推断 |
+| 输出条件 | 解析结果是否回显、存储、日志、触发外部请求 | 只影响风险说明，不替代前四项 |
 
-## 1. XMLReader
+状态必须用中文：确认漏洞、条件成立、待验证、不可确认、非漏洞。
 
-### 识别特征
+## 通用有效防护
 
-```java
-import org.xml.sax.XMLReader;
-import org.xml.sax.InputSource;
-import org.xml.sax.helpers.XMLReaderFactory;
-```
+优先接受以下防护：
 
-### 危险模式
+- 禁用 DOCTYPE：`http://apache.org/xml/features/disallow-doctype-decl = true`。
+- 同时禁用通用外部实体和参数外部实体。
+- 禁止外部 DTD 加载：`http://apache.org/xml/features/nonvalidating/load-external-dtd = false`，通常作为补充。
+- JAXP 1.5+ 的 `XMLConstants.ACCESS_EXTERNAL_DTD`、`ACCESS_EXTERNAL_SCHEMA`、`ACCESS_EXTERNAL_STYLESHEET` 设置为空字符串。
+- StAX 的 `XMLInputFactory.SUPPORT_DTD = false` 和 `IS_SUPPORTING_EXTERNAL_ENTITIES = false`。
+- 自定义 resolver 明确拒绝外部实体或只返回本地安全空源。
 
-```java
-// ❌ 高危：未设置任何安全特性
-XMLReader xmlReader = XMLReaderFactory.createXMLReader();
-InputSource inputSource = new InputSource(request.getInputStream());
-xmlReader.parse(inputSource);
-```
+不足或不能单独证明安全：
 
-### 安全模式
+- `setValidating(false)`。
+- `setNamespaceAware(true)`。
+- 只设置 `setExpandEntityReferences(false)`。
+- 只禁用一种外部实体。
+- 在异常处理或解析之后设置 feature。
+- resolver 名称像 `SafeResolver`，但没有读取实现。
+- 依赖新 JDK 或新库默认值，但项目运行版本未确认。
 
-```java
-// ✅ 安全：禁止 DOCTYPE
-XMLReader xmlReader = XMLReaderFactory.createXMLReader();
-xmlReader.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-xmlReader.parse(inputSource);
+## DOM: DocumentBuilderFactory
 
-// ✅ 安全：分别禁用外部实体
-XMLReader xmlReader = XMLReaderFactory.createXMLReader();
-xmlReader.setFeature("http://xml.org/sax/features/external-general-entities", false);
-xmlReader.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-xmlReader.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-xmlReader.parse(inputSource);
-```
-
-### 检测规则
-
-| 检查项 | 安全 | 危险 |
-|--------|------|------|
-| `setFeature("disallow-doctype-decl", true)` | ✅ | 未调用 |
-| `setFeature("external-general-entities", false)` | ✅ | 未调用 |
-| `setFeature("external-parameter-entities", false)` | ✅ | 未调用 |
-
-### 搜索正则
-
-```bash
-grep -rn "XMLReaderFactory.createXMLReader\|XMLReader.*parse" --include="*.java"
-```
-
----
-
-## 2. SAXBuilder (JDOM2)
-
-### 识别特征
+识别：
 
 ```java
-import org.jdom2.input.SAXBuilder;
-import org.jdom2.Document;
-import org.jdom2.Element;
+DocumentBuilderFactory.newInstance()
+factory.newDocumentBuilder()
+builder.parse(input)
 ```
 
-### Maven 依赖
+重点：
 
-```xml
-<dependency>
-    <groupId>org.jdom</groupId>
-    <artifactId>jdom2</artifactId>
-</dependency>
-```
+- `factory.setFeature` 必须发生在 `newDocumentBuilder()` 之前。
+- `setExpandEntityReferences(false)` 只能作为补充。
+- `builder.setEntityResolver(resolver)` 需要读取 resolver 实现。
 
-### 危险模式
+安全示例：
 
 ```java
-// ❌ 高危：默认构造函数，未设置安全特性
-SAXBuilder saxBuilder = new SAXBuilder();
-Document doc = saxBuilder.build(new StringReader(xml));
+DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+DocumentBuilder builder = factory.newDocumentBuilder();
 ```
 
-### 安全模式
+误判点：
+
+- 看到 `DocumentBuilderFactory` 但 XML 来源是服务端固定配置，通常不是用户可控漏洞。
+- 看到 `parse(File)` 时要确认文件路径是否用户可控；若只是本地配置文件，最多是加固建议。
+
+## SAX: SAXParserFactory / XMLReader
+
+识别：
 
 ```java
-// ✅ 安全：禁止 DOCTYPE
-SAXBuilder saxBuilder = new SAXBuilder();
-saxBuilder.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-Document doc = saxBuilder.build(new StringReader(xml));
-
-// ✅ 安全：分别禁用
-SAXBuilder saxBuilder = new SAXBuilder();
-saxBuilder.setFeature("http://xml.org/sax/features/external-general-entities", false);
-saxBuilder.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-Document doc = saxBuilder.build(new StringReader(xml));
+SAXParserFactory.newInstance()
+factory.newSAXParser()
+parser.parse(input, handler)
+XMLReaderFactory.createXMLReader()
+xmlReader.parse(inputSource)
 ```
 
-### 注意事项
+重点：
 
-- JDOM2 2.0.6+ 默认禁用外部实体，但仍建议显式设置
-- 旧版本 JDOM (1.x) 使用 `org.jdom.input.SAXBuilder`，默认不安全
+- `SAXParserFactory` 的 feature 应配置在 factory 上并在 `newSAXParser()` 前完成。
+- `XMLReader` 的 feature 应配置在实际调用 `parse()` 的 reader 上。
+- `SAXParserFactory.setNamespaceAware`、`setValidating(false)` 不是 XXE 防护。
 
-### 搜索正则
-
-```bash
-grep -rn "new SAXBuilder\|SAXBuilder.*build" --include="*.java"
-```
-
----
-
-## 3. SAXReader (dom4j)
-
-### 识别特征
+安全示例：
 
 ```java
-import org.dom4j.io.SAXReader;
-import org.dom4j.Document;
-import org.dom4j.Element;
+SAXParserFactory factory = SAXParserFactory.newInstance();
+factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+SAXParser parser = factory.newSAXParser();
 ```
 
-### Maven 依赖
+## dom4j: SAXReader
 
-```xml
-<dependency>
-    <groupId>org.dom4j</groupId>
-    <artifactId>dom4j</artifactId>
-</dependency>
-```
-
-### 危险模式
+识别：
 
 ```java
-// ❌ 高危：默认构造函数，未设置安全特性
-SAXReader reader = new SAXReader();
-Document document = reader.read(new StringReader(xml));
-Element root = document.getRootElement();
+new SAXReader()
+reader.read(input)
 ```
 
-### 安全模式
+重点：
+
+- `reader.setFeature` 必须在 `read()` 前调用。
+- dom4j 版本不同默认行为不同，不要只凭版本推断安全。
+- XPath、`elementText`、`getText` 是结果使用路径，不是解析 sink 本身。
+
+安全示例：
 
 ```java
-// ✅ 安全：禁止 DOCTYPE
 SAXReader reader = new SAXReader();
 reader.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-Document document = reader.read(new StringReader(xml));
-
-// ✅ 安全：分别禁用
-SAXReader reader = new SAXReader();
 reader.setFeature("http://xml.org/sax/features/external-general-entities", false);
 reader.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-Document document = reader.read(new StringReader(xml));
 ```
 
-### 回显检测要点
+## JDOM/JDOM2: SAXBuilder
 
-dom4j 提供丰富的节点操作 API，解析结果常被用于回显：
+识别：
 
 ```java
-// 常见回显路径
-root.element("user").getText()          // 获取子元素文本
-root.elementText("user")               // 获取子元素文本（简写）
-root.attributeValue("id")              // 获取属性值
-root.selectSingleNode("//user").getText()  // XPath 查询
+new SAXBuilder()
+builder.build(input)
 ```
 
-### 搜索正则
+重点：
 
-```bash
-grep -rn "new SAXReader\|SAXReader.*read\|\.getRootElement\|\.elementText" --include="*.java"
-```
+- 旧 `org.jdom.input.SAXBuilder` 与 JDOM2 行为不同，要看依赖版本和配置。
+- JDOM2 部分版本默认更安全，但仍应以显式配置或版本证据为准。
 
----
-
-## 4. SAXParserFactory
-
-### 识别特征
+安全示例：
 
 ```java
-import javax.xml.parsers.SAXParserFactory;
-import javax.xml.parsers.SAXParser;
-import org.xml.sax.XMLReader;
-import org.xml.sax.helpers.DefaultHandler;
+SAXBuilder builder = new SAXBuilder();
+builder.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+builder.setFeature("http://xml.org/sax/features/external-general-entities", false);
+builder.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
 ```
 
-### 危险模式
+## StAX: XMLInputFactory
+
+识别：
 
 ```java
-// ❌ 高危：未设置安全特性
-SAXParserFactory factory = SAXParserFactory.newInstance();
-XMLReader xmlReader = factory.newSAXParser().getXMLReader();
-xmlReader.parse(new InputSource(new StringReader(xml)));
-
-// ❌ 高危：使用 DefaultHandler
-SAXParserFactory factory = SAXParserFactory.newInstance();
-SAXParser parser = factory.newSAXParser();
-parser.parse(inputStream, new DefaultHandler());
+XMLInputFactory.newInstance()
+factory.createXMLStreamReader(input)
+factory.createXMLEventReader(input)
 ```
 
-### 安全模式
+安全配置：
 
 ```java
-// ✅ 安全：在 factory 上设置特性
-SAXParserFactory factory = SAXParserFactory.newInstance();
-factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-XMLReader xmlReader = factory.newSAXParser().getXMLReader();
-xmlReader.parse(new InputSource(new StringReader(xml)));
-
-// ✅ 安全：分别禁用
-SAXParserFactory factory = SAXParserFactory.newInstance();
-factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-```
-
-### 注意事项
-
-- `setFeature` 必须在 `factory` 上调用，不是在 `parser` 或 `xmlReader` 上
-- 注意区分 `SAXParserFactory.setFeature()` 和 `XMLReader.setFeature()` 的设置位置
-
-### 搜索正则
-
-```bash
-grep -rn "SAXParserFactory.newInstance\|newSAXParser\|getXMLReader" --include="*.java"
-```
-
----
-
-## 5. DocumentBuilderFactory
-
-### 识别特征
-
-```java
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.DocumentBuilder;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-```
-
-### 危险模式
-
-```java
-// ❌ 高危：未设置安全特性
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-DocumentBuilder builder = factory.newDocumentBuilder();
-Document document = builder.parse(new InputSource(new StringReader(xml)));
-Element root = document.getDocumentElement();
-
-// ❌ 高危：仅设置 setValidating(false) 不能防 XXE
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-factory.setValidating(false);  // 这不能防止 XXE！
-DocumentBuilder builder = factory.newDocumentBuilder();
-```
-
-### 安全模式
-
-```java
-// ✅ 安全：禁止 DOCTYPE
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-DocumentBuilder builder = factory.newDocumentBuilder();
-Document document = builder.parse(inputSource);
-
-// ✅ 安全：分别禁用
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-factory.setExpandEntityReferences(false);
-DocumentBuilder builder = factory.newDocumentBuilder();
-```
-
-### 回显检测要点
-
-DOM 解析产生完整文档树，回显方式多样：
-
-```java
-// 常见回显路径
-root.getElementsByTagName("user").item(0).getTextContent()
-root.getAttribute("id")
-document.getElementsByTagName("*")  // 遍历所有元素
-
-// Transformer 输出（可能整体回显）
-TransformerFactory.newInstance().newTransformer()
-    .transform(new DOMSource(document), new StreamResult(response.getOutputStream()));
-```
-
-### 搜索正则
-
-```bash
-grep -rn "DocumentBuilderFactory.newInstance\|newDocumentBuilder\|\.parse.*InputSource\|getTextContent\|getElementsByTagName" --include="*.java"
-```
-
----
-
-## 6. 其他 XML 组件
-
-### TransformerFactory
-
-```java
-// ❌ 危险
-TransformerFactory tf = TransformerFactory.newInstance();
-tf.newTransformer(new StreamSource(xmlInput));
-
-// ✅ 安全
-TransformerFactory tf = TransformerFactory.newInstance();
-tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-tf.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
-```
-
-### XMLInputFactory (StAX)
-
-```java
-// ❌ 危险
 XMLInputFactory factory = XMLInputFactory.newInstance();
-XMLStreamReader reader = factory.createXMLStreamReader(inputStream);
-
-// ✅ 安全
-XMLInputFactory factory = XMLInputFactory.newInstance();
-factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
 factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+factory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
 ```
 
-### SchemaFactory
+Gotchas：
+
+- `IS_COALESCING`、`IS_NAMESPACE_AWARE` 不防 XXE。
+- Woodstox 等实现的默认值可能不同，仍需配置或版本证据。
+
+## TransformerFactory / SchemaFactory
+
+识别：
 
 ```java
-// ❌ 危险
-SchemaFactory factory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-factory.newSchema(new StreamSource(xmlInput));
+TransformerFactory.newInstance()
+factory.newTransformer(new StreamSource(input))
+SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI)
+factory.newSchema(new StreamSource(input))
+```
 
-// ✅ 安全
-SchemaFactory factory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
-factory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+安全配置：
+
+```java
+factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_STYLESHEET, "");
 factory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
 ```
 
-### JAXB Unmarshaller
+Gotchas：
+
+- `TransformerFactory` 处理 XSLT 时可能加载外部 stylesheet 或 DTD。
+- `SchemaFactory` 验证 XML Schema 时可能加载外部 schema 或 DTD。
+- 只看到 `transform` 输出到 response 不等于 XXE；仍要看输入 Source 是否可控。
+
+## JAXB / Unmarshaller
+
+识别：
 
 ```java
-// ❌ 危险：直接从 StreamSource 解析
-JAXBContext context = JAXBContext.newInstance(User.class);
-Unmarshaller unmarshaller = context.createUnmarshaller();
-User user = (User) unmarshaller.unmarshal(new StreamSource(inputStream));
-
-// ✅ 安全：先用安全的 DocumentBuilderFactory 解析，再传给 JAXB
-DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-DocumentBuilder db = dbf.newDocumentBuilder();
-Document doc = db.parse(inputStream);
-User user = (User) unmarshaller.unmarshal(doc);
+JAXBContext.newInstance(User.class)
+Unmarshaller unmarshaller = context.createUnmarshaller()
+unmarshaller.unmarshal(input)
 ```
 
----
+风险重点：
 
-## 7. 通用审计要点
+- 直接 `unmarshal(InputStream)`、`unmarshal(Reader)`、`unmarshal(StreamSource)` 需要确认底层 parser 安全。
+- 如果先用安全 `DocumentBuilderFactory` 解析，再传入 `Document`，通常更安全。
+- `XMLStreamReader` 由外部传入时，要检查创建它的 `XMLInputFactory` 配置。
 
-### 安全配置有效性判断
+## XStream.fromXML
 
-| 配置 | 防护效果 | 备注 |
-|------|----------|------|
-| `disallow-doctype-decl = true` | **完全防护** | 拒绝所有 DOCTYPE，最安全 |
-| `external-general-entities = false` | 部分防护 | 仅禁用通用外部实体 |
-| `external-parameter-entities = false` | 部分防护 | 仅禁用参数外部实体 |
-| `load-external-dtd = false` | 部分防护 | 仅禁止加载外部 DTD |
-| `setValidating(false)` | **无防护** | 验证与外部实体无关 |
-| `setNamespaceAware(true)` | **无防护** | 命名空间与外部实体无关 |
-| `setExpandEntityReferences(false)` | 部分防护 | 仅 DocumentBuilderFactory 有效 |
+识别：
 
-### 完整防护要求
+```java
+XStream xstream = new XStream();
+xstream.fromXML(xml);
+projectXmlUtil.fromXML(xml, target);
+```
 
-**至少满足以下之一：**
+重点：
 
-1. 设置 `disallow-doctype-decl = true`（推荐）
-2. 同时设置 `external-general-entities = false` **且** `external-parameter-entities = false`
+- `fromXML` 是 XML 解析入口，也是对象反序列化入口；本 skill 只判断 XML 外部实体维度，gadget、任意类型实例化、权限 bypass 交给反序列化专项。
+- 必须确认底层 driver 或 parser，例如 XPP、DomDriver、StaxDriver、JAXP parser，以及项目是否显式配置安全 driver、converter、permission 或 parser feature。
+- 只看到 `XStream.fromXML(String)` 和用户可控 XML，但无法确认底层 driver 外部实体行为时，标“待验证”，不要直接写“非漏洞”。
+- 只有能证明输入不可控、底层 parser 安全配置充分，或 `fromXML` 未被执行，才可写“非漏洞”。
+- 不输出 gadget 类名、链式 payload、组件 CVE、CVSS 或修复版本。
 
-### 常见误判场景
+误判点：
 
-| 场景 | 说明 | 判定 |
-|------|------|------|
-| 仅设置 `setValidating(false)` | 不能防 XXE | **仍然危险** |
-| 设置了一个但缺另一个外部实体禁用 | 不完整防护 | **仍然危险** |
-| 在 catch 中设置 feature | 正常流程不会执行 | **仍然危险** |
-| 工厂方法复用但配置在特定分支 | 其他分支未防护 | **部分危险** |
+- 把 `XmlUtil.fromXML` 全部交给反序列化专项，忽略它仍然会解析 XML。
+- 只凭 `xstream-1.4.x.jar` 文件名判定安全或不安全。
+- 看到 `processAnnotations`、`alias`、DTO 注解就写 XXE；这些只说明映射关系，不说明外部实体行为。
 
-### 版本相关安全差异
+## 输入来源判断
 
-| 组件/版本 | 默认行为 |
-|-----------|----------|
-| JDK 8u191+ | 部分限制外部实体，但不完全安全 |
-| JDOM2 2.0.6+ | 默认禁用外部实体 |
-| dom4j 2.1.1+ | 仍需手动设置安全特性 |
-| Woodstox 5.0+ | 默认禁用外部实体 |
+高可控来源：
+
+- `HttpServletRequest.getInputStream()` / `getReader()`。
+- `@RequestBody String`、`@RequestBody byte[]`。
+- `request.getParameter("xml")` 或 XML 字段。
+- `MultipartFile.getInputStream()`。
+- SOAP Body、RPC/MQ 消息体。
+
+间接可控来源：
+
+- 数据库中的 XML 字段。
+- 文件上传后再解析的 XML。
+- 第三方系统回调。
+
+SOAP/WebService 入口：
+
+- CXF/Spring 项目优先读取 `<jaxws:endpoint address="/Service">`、`<jaxrs:server address="/api">`、servlet mapping、WSDL service/port 或 route-mapper 输出。
+- `@WebService` 的类名、接口名、实现类名、targetNamespace 只能证明服务类型和 operation 候选，不等于 HTTP 访问 path。
+- 如果只知道 `FooWebServiceImpl` 或 `synchroXxx` 方法，没有配置地址证据，报告入口写“未确认”，不要拼出 `/FooWebService`。
+
+通常不可控：
+
+- classpath 下固定配置 XML。
+- 服务端硬编码 XML。
+- 只由部署人员维护的 Spring 配置。
+
+## 回显和 OOB 条件
+
+回显证据：
+
+- `response.getWriter()`、`OutputStream`、`model.addAttribute`、返回 DTO 字段。
+- XML 节点值进入异常信息或业务返回。
+- 整个 DOM/XSLT 转换结果写回 HTTP 响应。
+
+无回显：
+
+- 可以写“Blind/OOB 条件待验证”，但不要声称触发了外带。
+- 不输出 OOB DTD、外带服务器地址、文件读取 payload，也不指导构造实体声明、外部实体引用或带目标主机的验证 XML。
+- 授权验证建议应优先写补证路径，例如确认 parser 版本、读取 driver 配置、使用本地单元测试 harness 观察 resolver 是否被调用；不要给可复制请求或实体内容。
+
+## 常见误判
+
+- 把所有 `parse()` 命中写成 XXE，未确认 XML 来源。
+- 把 `setValidating(false)` 当作安全防护。
+- 把 `@WebService` 或 SOAP endpoint 本身当作 XML 解析 sink。
+- 用 WebService 类名、接口名或方法名臆造 endpoint path，而没有引用 CXF/JAX-WS/WSDL/route-mapper 证据。
+- 没有读取 resolver 实现就认为自定义 resolver 安全。
+- 看到 `DocumentBuilderFactory` 解析固定配置文件就写漏洞。
+- 只凭依赖版本推断安全或不安全，缺少实际 parser 配置证据。
+- 把 `XStream.fromXML` 写成“非 XXE”而未确认底层 driver 或 parser 外部实体行为。

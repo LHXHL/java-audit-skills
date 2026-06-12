@@ -1,418 +1,176 @@
 ---
 name: java-xxe-audit
-description: Java Web 源码 XXE (XML External Entity) 漏洞审计工具。从源码中识别所有 XML 解析操作并检测外部实体注入漏洞。适用于：(1) 识别 XML 解析器类型和实现方式，(2) 发现 XXE 注入漏洞，(3) 检查外部实体防护配置情况，(4) 审计 XML 输入来源与回显逻辑。支持 XMLReader、SAXBuilder、SAXReader、SAXParserFactory、DocumentBuilderFactory 五种主流解析器。**支持反编译 .class/.jar 文件提取 XML 解析逻辑**。结合 java-route-mapper 使用可实现完整的路由+XXE审计。
+description: 当用户要求审计 Java 源码、字节码或 pipeline 证据中的 XML 外部实体注入、XML 解析器安全配置、SOAP/XML 请求体解析、JAXP/JDOM/dom4j/StAX/JAXB/Transformer/Schema/XStream XML 解析风险时使用；只做路由枚举、调用链追踪、SQL、文件、反序列化、鉴权或组件 CVE 扫描时不要使用。
 ---
 
-# Java XXE 漏洞审计工具
-
-检查 Java Web 项目源码，识别 XML 解析实现，检测 XXE (XML External Entity) 注入漏洞。
-
-## 核心要求
-
-**此技能必须完整检查所有 XML 解析相关代码，不允许省略。**
-
-- ✅ 识别所有 XML 解析入口点（5 种解析器）
-- ✅ 检查每个解析器的外部实体防护配置
-- ✅ 追踪 XML 输入来源（用户可控性）
-- ✅ 检测回显点（数据是否返回给用户）
-- ✅ 为每个漏洞点提供验证 PoC
-- ❌ 禁止省略任何 XML 解析操作
-- ❌ 禁止跳过反编译步骤
-
----
-
-## 漏洞分级标准
-
-**详见 [SEVERITY_RATING.md](../java-shared/SEVERITY_RATING.md)**
-
-- 漏洞编号格式: `{C/H/M/L}-XXE-{序号}`
-- 严重等级 = f(可达性 R, 影响范围 I, 利用复杂度 C)
-- Score = R × 0.40 + I × 0.35 + C × 0.25，映射 CVSS 3.1
-
-| 前缀 | CVSS 3.1 | 含义 |
-|------|----------|------|
-| 🔴 **C** | 9.0-10.0 | 可直接导致系统沦陷 |
-| 🟠 **H** | 7.0-8.9 | 可造成重大损害 |
-| 🟡 **M** | 4.0-6.9 | 可造成一定损害 |
-| 🔵 **L** | 0.1-3.9 | 安全加固项 |
-
----
-
-## 技能协作流程（CRITICAL）
-
-**java-xxe-audit 必须在 java-route-mapper 之后执行，基于已梳理的路由信息进行审计。**
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    完整审计流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  [步骤1] java-route-mapper                                      │
-│     │                                                           │
-│     │ 输出：                                                    │
-│     │ ├─ 所有 HTTP 路由列表                                     │
-│     │ ├─ 每个路由的参数定义                                     │
-│     │ └─ Content-Type 识别（application/xml, text/xml）         │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤2] java-xxe-audit（本技能）                               │
-│     │                                                           │
-│     │ 输入：java-route-mapper 的输出                            │
-│     │                                                           │
-│     │ 执行：                                                    │
-│     │ ├─ 快速扫描 XML 解析类                                    │
-│     │ ├─ 检查解析器安全配置                                     │
-│     │ ├─ 追踪 XML 输入来源                                      │
-│     │ └─ 检查回显路径                                           │
-│     │                                                           │
-│     ├─── 需要深入追踪 ───→ java-route-tracer                    │
-│     │                           │                               │
-│     │    ←── 返回调用链信息 ────┘                               │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤3] 输出综合审计报告                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 输入依赖（来自 java-route-mapper）
-
-**在开始审计前，必须先检查是否已有 java-route-mapper 的输出文件：**
-
-```
-{project_name}_audit/
-├── route_mapper/
-│   ├── {project_name}_route_mapper_{timestamp}.md    ← 主索引（先读此文件定位模块详情）
-│   ├── {module_name}/
-│   │   └── {project_name}_module_{module_name}_{timestamp}.md  ← 模块详情
-│   └── webservice/
-│       └── {project_name}_ws_{service_name}_{timestamp}.md
-└── xxe_audit/
-    └── {project_name}_xxe_audit_{timestamp}.md  ← 本技能输出
-```
-
-**如果 route_mapper 输出不存在，必须先运行：**
-```python
-Skill(skill="java-route-mapper", args="--project {project_path}")
-```
-
-### 从 route_mapper 获取的关键信息
-
-| 信息 | 用途 |
-|:-----|:-----|
-| 路由路径 | 定位 Controller/Servlet 入口 |
-| Content-Type | 识别接受 XML 输入的端点 |
-| 参数来源 | 识别 getInputStream() 等原始输入 |
-| 请求方法 | POST 方法更可能接受 XML Body |
-
----
-
-## 工作流程（三阶段）
-
-### 阶段1: 快速扫描（优先执行）
-
-**目标：快速定位所有 XML 解析点和高危文件。**
-
-```bash
-# 1.1 搜索 XML 解析器创建
-grep -ri "XMLReaderFactory.createXMLReader" --include="*.java"
-grep -ri "new SAXBuilder" --include="*.java"
-grep -ri "new SAXReader" --include="*.java"
-grep -ri "SAXParserFactory.newInstance" --include="*.java"
-grep -ri "DocumentBuilderFactory.newInstance" --include="*.java"
-
-# 1.2 搜索 XML 解析执行点
-grep -ri "\.parse\s*(" --include="*.java"
-grep -ri "\.build\s*(" --include="*.java"
-grep -ri "\.read\s*(" --include="*.java"
-
-# 1.3 搜索 XML 输入来源
-grep -ri "getInputStream" --include="*.java"
-grep -ri "InputSource" --include="*.java"
-grep -ri "StringReader" --include="*.java"
-grep -ri "StreamSource" --include="*.java"
-
-# 1.4 搜索安全配置（判断是否已防护）
-grep -ri "disallow-doctype-decl" --include="*.java"
-grep -ri "external-general-entities" --include="*.java"
-grep -ri "external-parameter-entities" --include="*.java"
-grep -ri "setFeature" --include="*.java"
-grep -ri "setExpandEntityReferences" --include="*.java"
+# Java XXE Audit
 
-# 1.5 搜索其他 XML 相关类
-grep -ri "TransformerFactory" --include="*.java"
-grep -ri "SchemaFactory" --include="*.java"
-grep -ri "XMLInputFactory" --include="*.java"
-grep -ri "Unmarshaller\|JAXBContext" --include="*.java"
-```
-
-**输出：高危文件清单（按优先级排序）**
+## 当前定位
 
-| 优先级 | 文件类型 | 审计重点 |
-|:-------|:---------|:---------|
-| P0 | 直接使用 `getInputStream()` + XML 解析 | 用户可控 XML 直接解析 |
-| P1 | Servlet/Controller 中的 XML 处理 | HTTP 入口处的 XML 解析 |
-| P2 | XML 工具类 `*XmlUtil*.java` | 通用 XML 解析方法 |
-| P3 | WebService/SOAP 处理类 | SOAP XML 解析 |
-
-### 阶段2: 解析器安全配置检查
-
-**对阶段1发现的每个 XML 解析点，逐一检查安全配置状态。**
+`java-xxe-audit` 是 Java 审计体系中的 XML 解析专项判定层。它读取源码、配置、字节码、反编译结果、`java-route-mapper` 路由清单或 `java-route-tracer` 调用链证据，判断用户可控 XML 是否进入未安全配置的 XML 解析器，并区分：
 
-#### 2.1 解析器识别与配置检查
+- 确认漏洞
+- 条件成立
+- 待验证
+- 不可确认
+- 非漏洞
 
-对每个解析器实例，检查是否设置了以下防护特性：
+本 skill 不负责路由全量枚举，不替代调用链追踪，不做鉴权结论，不扫描依赖 CVE，不生成可直接攻击的 XXE payload。
 
-| 防护特性 | Feature URI | 作用 |
-|:---------|:------------|:-----|
-| 禁止 DOCTYPE | `http://apache.org/xml/features/disallow-doctype-decl` | **最严格，推荐** |
-| 禁止外部通用实体 | `http://xml.org/sax/features/external-general-entities` | 禁用外部实体引用 |
-| 禁止外部参数实体 | `http://xml.org/sax/features/external-parameter-entities` | 禁用参数实体 |
-| 禁止外部 DTD 加载 | `http://apache.org/xml/features/nonvalidating/load-external-dtd` | 禁止加载外部 DTD |
+## 上下游边界
 
-详细检测规则参见各解析器参考文档：
+上游输入可以是：
 
-| 解析器 | 参考资料 |
-|--------|----------|
-| XMLReader | [PARSERS.md - XMLReader 章节](references/PARSERS.md#1-xmlreader) |
-| SAXBuilder (JDOM2) | [PARSERS.md - SAXBuilder 章节](references/PARSERS.md#2-saxbuilder-jdom2) |
-| SAXReader (dom4j) | [PARSERS.md - SAXReader 章节](references/PARSERS.md#3-saxreader-dom4j) |
-| SAXParserFactory | [PARSERS.md - SAXParserFactory 章节](references/PARSERS.md#4-saxparserfactory) |
-| DocumentBuilderFactory | [PARSERS.md - DocumentBuilderFactory 章节](references/PARSERS.md#5-documentbuilderfactory) |
+- 用户指定的 Java 项目路径、类、方法、XML 处理器、SOAP/WebService 入口或 XML 工具类。
+- `java-route-mapper` 产出的 XML/SOAP 路由、Content-Type 和入口参数。
+- `java-route-tracer` 产出的 XML 参数流向、可控性、分支条件和解析 sink 候选。
+- `.class`、`.jar`、`.war`、已有反编译结果或 Spring/CXF/JAX-WS 配置。
 
-#### 2.2 XML 输入来源追踪
+下游通常读取：
 
-对每个 XML 解析点，追踪输入来源：
+- XXE 审计报告。
+- XML 解析器映射、输入来源、防护状态、回显/OOB 条件和限制说明。
+- 需要继续交给 `java-route-tracer` 或 `java-auth-audit` 的证据缺口。
 
-```
-HTTP 请求体: request.getInputStream()
-     ↓
-InputSource / StringReader / StreamSource
-     ↓
-XMLReader.parse() / SAXBuilder.build() / SAXReader.read() / ...
-     ↓
-解析结果: Document / Element / Node
-     ↓
-回显: response.getWriter().write() / model.addAttribute() / ...
-```
+相邻 skill 边界：
 
-| 输入来源 | 用户可控性 | 风险等级 |
-|:---------|:-----------|:---------|
-| `request.getInputStream()` | **完全可控** | 高危 |
-| `request.getParameter("xml")` | **完全可控** | 高危 |
-| `@RequestBody String xml` | **完全可控** | 高危 |
-| `MultipartFile.getInputStream()` | **完全可控** | 高危 |
-| 数据库读取的 XML 字段 | 间接可控 | 中危 |
-| 配置文件/硬编码 XML | 不可控 | 低 |
+- `java-route-mapper`：枚举 XML/SOAP/REST 路由；本 skill 只消费路由证据。
+- `java-route-tracer`：追踪 XML 输入从入口到解析器；本 skill 只在证据不足时请求追踪，不凭方法名推断可控性。
+- `java-auth-audit`：判断入口鉴权、越权或未授权；本 skill 只透传鉴权上下文。
+- `java-file-read-audit`：判断文件读取漏洞；XXE 可能导致文件读取，但本 skill 只证明 XML 外部实体解析链。
+- `java-deserialization-audit`：判断 XStream/JAXB/JDK 等对象反序列化利用链；本 skill 只判断 `fromXML` 这类入口的 XML 外部实体解析维度。
+- `java-vuln-scanner`：扫描依赖 CVE；本 skill 不编造 CVE、CVSS 或修复版本。
 
-#### 2.3 回显路径检查
+## 触发条件
 
-XXE 利用方式取决于是否有回显：
+满足任一条件时触发：
 
-| 回显方式 | 利用类型 | 检测方法 |
-|:---------|:---------|:---------|
-| 解析结果写入 HTTP 响应 | **有回显 XXE** | 搜索 `response.getWriter()`, `getText()`, `getTextContent()` |
-| 解析结果写入页面模型 | **有回显 XXE** | 搜索 `model.addAttribute()`, `request.setAttribute()` |
-| 解析结果仅做逻辑处理 | **Blind XXE (OOB)** | 需通过外部 DTD 外带数据 |
-| 解析但无任何输出 | **Blind XXE (OOB)** | 需通过外部 DTD 外带数据 |
+- 用户明确要求审计 XXE、XML External Entity、外部实体、DTD、SOAP XML、XML parser 安全配置。
+- 代码中出现 `DocumentBuilderFactory`、`SAXParserFactory`、`XMLReader`、`SAXReader`、`SAXBuilder`、`XMLInputFactory`、`TransformerFactory`、`SchemaFactory`、`JAXBContext`、`Unmarshaller`、`XStream.fromXML`、`XPathExpression` 等 XML 解析、转换或 XML 反序列化入口。
+- route-tracer 已报告用户输入到达 XML 解析器或 XML 工具类，需要判定是否构成 XXE。
+- 项目只有字节码，需要定位 XML 解析类并确认是否配置安全特性。
+- 用户给出候选 XML 处理代码，要求判断外部实体是否可被解析。
 
-### 阶段3: 详细检测与报告
+## 不触发条件
 
-#### 3.1 触发 java-route-tracer
+以下情况不要触发本 skill：
 
-当发现以下情况时，调用 java-route-tracer 获取完整调用链：
+- 只要求列出 Controller、Servlet、WebService 路由。
+- 只要求追踪参数调用链，不要求判断 XML 解析风险。
+- 只看到 XML 文件、Spring bean、SOAP 配置或 `@WebService`，但没有 XML 解析 API 或外部实体处理证据。
+- 只审计 SQL、文件上传、文件读取、反序列化、鉴权、SSRF 或组件版本。
+- XML 输入只作为字符串透传、日志记录或存储，没有进入解析器。
+- 用户要求未授权攻击、外带服务器、真实文件读取 payload 或批量验证脚本。
 
-| 触发条件 | 调用方式 |
-|:---------|:---------|
-| XML 输入经过多层传递 | `Skill(skill="java-route-tracer", args="--route {route}")` |
-| 解析器在工具类/基类中 | `Skill(skill="java-route-tracer", args="--route {route}")` |
-| 回显路径不明确 | `Skill(skill="java-route-tracer", args="--route {route}")` |
+## 成功标准
 
-#### 3.2 生成报告
+合格输出必须同时满足：
 
-整合所有检测结果，生成综合审计报告。
-
----
-
-## XML 解析器识别
-
-| 解析器 | 识别特征 | 所属包/依赖 | 参考资料 |
-|--------|----------|-------------|----------|
-| XMLReader | `XMLReaderFactory.createXMLReader()`, `xmlReader.parse()` | `org.xml.sax` (JDK 内置) | [PARSERS.md](references/PARSERS.md) |
-| SAXBuilder | `new SAXBuilder()`, `saxBuilder.build()` | `org.jdom2` (jdom2) | [PARSERS.md](references/PARSERS.md) |
-| SAXReader | `new SAXReader()`, `reader.read()` | `org.dom4j.io` (dom4j) | [PARSERS.md](references/PARSERS.md) |
-| SAXParserFactory | `SAXParserFactory.newInstance()`, `.getXMLReader().parse()` | `javax.xml.parsers` (JDK 内置) | [PARSERS.md](references/PARSERS.md) |
-| DocumentBuilderFactory | `DocumentBuilderFactory.newInstance()`, `builder.parse()` | `javax.xml.parsers` (JDK 内置) | [PARSERS.md](references/PARSERS.md) |
-
-### 其他可能受 XXE 影响的组件
-
-| 组件 | 识别特征 | 漏洞说明 |
-|------|----------|----------|
-| TransformerFactory | `TransformerFactory.newInstance()` | XSLT 处理可触发 XXE |
-| SchemaFactory | `SchemaFactory.newInstance()` | XML Schema 验证可触发 XXE |
-| XMLInputFactory (StAX) | `XMLInputFactory.newInstance()` | StAX 解析器可触发 XXE |
-| JAXB Unmarshaller | `JAXBContext.newInstance()`, `unmarshaller.unmarshal()` | XML 反序列化可触发 XXE |
-
----
-
-## 反编译阶段（CRITICAL）
-
-**当源码不可用时，必须使用 CFR 反编译器反编译 XML 解析相关类。**
-
-详细策略参见 [DECOMPILE_STRATEGY.md](references/DECOMPILE_STRATEGY.md)
-
-### 反编译工具调用
-
-```bash
-# 反编译单个 XML 处理类
-java -jar {CFR_JAR} /path/to/XmlParser.class --outputdir {output_path}/decompiled
-
-# 反编译 XML 处理相关目录
-find /path/to/WEB-INF/classes/com/example/util -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 反编译多个指定文件
-java -jar {CFR_JAR} /path/to/XmlUtil.class /path/to/XmlParser.class /path/to/SoapHandler.class --outputdir {output_path}/decompiled
-```
-
-### 必须反编译的类
-
-| 类型 | 匹配模式 | 目的 |
-|------|----------|------|
-| XML 工具类 | `*Xml*.class`, `*XML*.class`, `*Parser*.class` | 提取 XML 解析逻辑 |
-| Servlet | `*Servlet.class`, `*Controller.class` | 追踪输入来源 |
-| WebService | `*WebService*.class`, `*Soap*.class`, `*WS*.class` | SOAP XML 处理 |
-| 过滤器 | `*Filter.class` | XML 请求预处理 |
-
----
-
-## XXE 检测规则速查
-
-### ⚠️ 危险模式（无安全配置的解析器）
-
-| 解析器 | 危险代码 | 漏洞说明 |
-|:-------|:---------|:---------|
-| XMLReader | `XMLReaderFactory.createXMLReader()` 后直接 `parse()` | 未禁用外部实体 |
-| SAXBuilder | `new SAXBuilder()` 后直接 `build()` | 未禁用外部实体 |
-| SAXReader | `new SAXReader()` 后直接 `read()` | 未禁用外部实体 |
-| SAXParserFactory | `SAXParserFactory.newInstance()` 后直接 `parse()` | 未禁用外部实体 |
-| DocumentBuilderFactory | `DocumentBuilderFactory.newInstance()` 后直接 `parse()` | 未禁用外部实体 |
-
-### ✅ 安全模式（已配置防护）
-
-**所有解析器的安全修复方式一致——禁用 DOCTYPE 或外部实体：**
-
-```java
-// 方式1: 禁止 DOCTYPE 声明（最严格，推荐）
-setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-
-// 方式2: 分别禁用外部实体
-setFeature("http://xml.org/sax/features/external-general-entities", false);
-setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-```
-
-### ⚠️ 输入来源检测（CRITICAL - 确认用户可控性）
-
-**必须搜索的输入来源模式：**
-
-```bash
-# HTTP 请求体
-grep -ri "getInputStream" --include="*.java"
-grep -ri "getReader" --include="*.java"
-
-# 参数传入 XML
-grep -ri "getParameter.*xml\|getParameter.*XML" --include="*.java"
-
-# Spring 注解
-grep -ri "@RequestBody" --include="*.java"
-
-# 文件上传
-grep -ri "MultipartFile" --include="*.java" | grep -i "xml"
-
-# SOAP/WebService
-grep -ri "@WebService\|@WebMethod" --include="*.java"
-```
-
----
-
-## 数据流追踪（需要时加载 java-route-tracer）
-
-### 何时需要参数追踪
-
-| 场景 | 说明 | 操作 |
-|------|------|------|
-| XML 输入经过多层传递 | HTTP 请求体经 Controller → Service → Util 多层传递后解析 | 加载 java-route-tracer |
-| 解析器在工具类中 | XML 解析在通用 XmlUtil 类中，多处调用 | 加载 java-route-tracer |
-| 回显路径不明确 | 解析结果经过多次转换后输出 | 加载 java-route-tracer |
-| SOAP 处理链 | WebService 请求经拦截器/处理器链 | 加载 java-route-tracer |
-
-### 自动触发 java-route-tracer
-
-```python
-# 当需要追踪 XML 输入流向时
-Skill(
-    skill="java-route-tracer",
-    args="--route {controller_route} --project {project_path}"
-)
-```
-
----
-
-## 报告生成
-
-**输出单个综合审计报告文件：**
-
-```
-{project_name}_audit/xxe_audit/
-└── {route_name}/
-    └── {project_name}_xxe_audit_{timestamp}.md      # 综合审计报告
-```
-
-**路由名说明：**
-- 路由名从路由路径提取，去掉前缀斜杠和特殊字符
-- 例如：`/api/xml/parse` → `api_xml_parse`
-- 例如：`/ws/soap/endpoint` → `ws_soap_endpoint`
-
----
-
-## 输出格式
-
-**严格按照 [references/OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) 中的填充式模板生成输出文件。**
-
-- 文件名格式: `{project_name}_xxe_audit_{YYYYMMDD_HHMMSS}.md`
-- 不得修改模板结构、不得增删章节、不得调整顺序
-- 所有【填写】占位符必须替换为实际内容
-- 通用规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
-- 漏洞聚合规则参考: [java-shared/VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md)，同根因多入口合并为一个漏洞编号并列出“受影响入口”，不同条件入口拆分。
-
----
-
-## 验证检查清单
-
-**在标记审计完成前，必须执行以下检查：**
-
-### 代码检测检查
-- [ ] 所有 XML 解析类已检查
-- [ ] 所有 5 种解析器类型均已搜索
-- [ ] 每个解析器实例的安全配置已检查
-
-### 输入来源检查
-- [ ] 追踪了每个解析器的 XML 输入来源
-- [ ] 确认了输入是否用户可控
-- [ ] 检查了回显路径
-
-### 漏洞检测检查
-- [ ] 所有无防护的解析器已标记
-- [ ] 所有用户可控输入已追踪
-- [ ] 区分了有回显 XXE 和 Blind XXE
-
-### 报告完整性检查
-- [ ] **综合审计报告已生成，且通过 OUTPUT_TEMPLATE.md 末尾的自检清单**
-
----
-
-## 参考资料
-
-- [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) - 输出报告填充式模板
-- [PARSERS.md](references/PARSERS.md) - 五种 XML 解析器详细检测规则
-- [DECOMPILE_STRATEGY.md](references/DECOMPILE_STRATEGY.md) - 反编译策略指南
+- 每个结论都有入口或输入来源、XML 数据可控性、真实解析 sink、防护配置和代码位置。
+- 不把 XML 字符串、SOAP 框架、配置文件、类名或未读实现写成 XXE 漏洞。
+- WebService/SOAP 入口地址必须来自真实证据，例如 CXF/JAX-WS 配置、`@WebService` 服务名、WSDL 或 route-mapper 输出；不得用类名、接口名或方法名臆造 endpoint path。
+- 明确区分确认漏洞、条件成立、待验证、不可确认和非漏洞。
+- 对 `DOCTYPE`、外部通用实体、外部参数实体、外部 DTD、XInclude、EntityResolver、accessExternal*、StAX properties 等防护给出证据。
+- 对回显、无回显、OOB 条件只做静态可行性描述，不声称验证成功。
+- 同根因多入口按 `../java-shared/VULNERABILITY_GROUPING.md` 聚合；不同解析器、入口、防护条件或输出条件拆分。
+- 报告严格使用 `references/OUTPUT_TEMPLATE.md` 的 6 个编号章节，不新增 `## 0` 或额外编号章节，保留 `## 输出自检`。
+- 不编造 CVE、CVSS、修复版本、文件内容、网络请求、PoC 成功结果或不存在的代码路径。
+
+## 工作流
+
+### 1. 确定审计范围
+
+- 读取用户指定路径、候选入口、上游 route/tracer 报告和配置文件。
+- 若没有入口证据，可做 XML 解析器盘点，但结论只能是“待验证/不可确认/非漏洞”，不能写外部可利用。
+- 若只有工具类名、XML 文件名或 `UNCONFIRMED` sink，先定位实现源码、字节码或反编译结果。
+
+### 2. 选择 reference
+
+- 解析器和防护规则：读取 `references/PARSERS.md`。
+- 源码缺失或只给字节码：读取 `references/DECOMPILE_STRATEGY.md`。
+- 生成报告前：读取 `references/OUTPUT_TEMPLATE.md`。
+
+### 3. 定位 XML 解析 sink
+
+优先查找真实解析执行点：
+
+- DOM/SAX：`DocumentBuilder.parse`、`SAXParser.parse`、`XMLReader.parse`。
+- JDOM/dom4j：`SAXBuilder.build`、`SAXReader.read`。
+- StAX：`XMLInputFactory.createXMLStreamReader`、`createXMLEventReader`。
+- Transformer/Schema：`TransformerFactory.newTransformer(Source)`、`SchemaFactory.newSchema(Source)`。
+- JAXB：`Unmarshaller.unmarshal`，尤其是直接接收 `InputStream`、`Reader`、`StreamSource`、`SAXSource`、`XMLStreamReader` 的路径。
+- XStream：`XStream.fromXML`、项目封装的 `XmlUtil.fromXML`；只判定 XML parser 外部实体行为，不展开 gadget 或对象注入利用链。
+- XPath/XSLT：解析结果进入 `XPath` 或 `Transformer` 时继续检查源 parser 是否安全。
+
+### 4. 追踪 XML 输入和回显
+
+- 输入来源：`request.getInputStream`、`getReader`、`@RequestBody String`、`MultipartFile`、SOAP Body、MQ 消息、数据库 XML 字段、文件上传内容。
+- 中间包装：`InputSource`、`StringReader`、`ByteArrayInputStream`、`StreamSource`、`DOMSource`、`SAXSource`、`Source`。
+- 输出路径：HTTP response、页面 model、异常信息、日志、业务返回对象、文件写入、网络回连条件。
+- 若跨层证据不足，切回 `java-route-tracer`；不要凭 `parseXml`、`loadXml`、`handleSoap` 等名称推断可控性。
+
+### 5. 判定防护和执行条件
+
+- 确认安全配置必须在解析器创建后、解析调用前、同一实例或实际使用的 factory 上生效。
+- `setValidating(false)`、`setNamespaceAware(true)`、普通 schema 校验、try/catch 吞异常不等于 XXE 防护。
+- 自定义 `EntityResolver`、`XMLResolver`、`LSResourceResolver` 只有在实现明确拒绝外部实体时才算防护。
+- 解析器创建在安全工厂中，但后续又创建新解析器实例时，要分别判断。
+- 数据流缺入口、缺解析 sink、缺防护状态或缺执行条件时，输出待验证或不可确认。
+
+### 6. 输出和自检
+
+- 使用 `references/OUTPUT_TEMPLATE.md`。
+- 对没有确认漏洞的审计，也要输出已检查解析点、候选风险、非漏洞依据、不可确认项和待补证据。
+- 每个报告文件末尾必须包含 `## 输出自检`。
+
+## Hard Rules
+
+1. 没有真实 XML 解析/转换/反序列化 sink，不得下 XXE 结论。
+2. 没有用户可控 XML 输入，不得下 XXE 结论。
+3. 没有证据证明外部实体防护缺失或不足，不得下 XXE 结论。
+4. `UNCONFIRMED`、工具类名、SOAP endpoint、XML 文件、DTD 字符串或框架依赖只表示候选，不是漏洞。
+5. 结论状态必须使用中文枚举：确认漏洞、条件成立、待验证、不可确认、非漏洞。
+6. 不输出可直接攻击的 XXE payload、OOB DTD、真实文件路径读取请求、内网探测请求或验证成功断言。
+7. 不编造 CVE、CVSS、修复版本、文件内容、HTTP 响应或外带回连结果。
+8. 反编译证据必须指向真实存在且已读取的源码、反编译文件或 class/jar 来源；路径不存在时只能写不可确认。
+9. WebService 路由、SOAP endpoint、operation path 和服务地址必须逐项引用配置证据；只知道 `SZFTWebServiceImpl` 这类类名时，入口只能写“未确认”。
+10. `XStream.fromXML` 不得仅因“属于反序列化”写成非漏洞；未确认底层 driver、版本或安全配置时，应标待验证或不可确认，并把 gadget 风险交给反序列化专项。
+11. 报告全文禁止出现三个连续英文句点；无法完整确认时写中文“省略非关键字段”或限制说明。
+
+## Gotchas
+
+- `@WebService` 或 SOAP 本身不等于 XXE；很多 SOAP 栈由框架解析，业务代码未必能配置 parser。要看业务是否直接解析 XML。
+- `@WebService` 类名或接口名不等于访问路径；CXF `jaxws:endpoint address`、Spring bean、WSDL service/port 可能与类名完全不同，未读到真实配置时不要写具体 path。
+- `DocumentBuilderFactory.newInstance()` 后如果只调用 `setValidating(false)`，仍不能防 XXE。
+- 只禁用 `external-general-entities` 但未禁用 `external-parameter-entities`，不能算完整防护。
+- `setExpandEntityReferences(false)` 对 DOM 只是部分防护，不能单独证明安全。
+- `TransformerFactory`、`SchemaFactory`、`XMLInputFactory`、`Unmarshaller` 也可能触发外部资源加载，不要只查 5 种经典 parser。
+- `XStream.fromXML` 同时横跨 XML 解析和反序列化；XXE 只看 XML parser 外部实体行为，不能因 gadget 风险归属其他 skill 就排除 XML 解析风险。
+- 自定义 resolver 名为 `SafeEntityResolver` 不代表安全，必须读实现。
+- XML 来自配置文件或服务端常量时，通常不是用户可控；可写加固建议，不写漏洞。
+- 回显不存在不等于无风险，但只能写 Blind/OOB 条件待验证，不能声称已外带。
+
+## 停止、确认或切换条件
+
+- 找不到实现源码、反编译结果或字节码证据时：停止确认漏洞，输出不可确认。
+- 需要先知道 XML 输入是否来自入口时：切换到 `java-route-tracer`。
+- 需要判断入口是否未授权或越权时：交给 `java-auth-audit`。
+- 用户要求组件版本漏洞或 CVE 时：交给 `java-vuln-scanner`。
+- 用户要求真实攻击、OOB 回连、文件读取或内网探测 payload 时：拒绝该部分，只保留静态审计和授权验证建议。
+
+## Eval
+
+| 类型 | 用户请求或场景 | 预期行为 |
+|------|----------------|----------|
+| 正例 | “审计这个接口的 XML 解析是否有 XXE。” | 触发，定位入口、解析器、防护和回显条件 |
+| 正例 | “检查项目里 DocumentBuilderFactory 有没有禁用外部实体。” | 触发，读取 parser reference 并输出解析器映射 |
+| 正例 | “WAR 里只有 class，帮我看 SOAP XML 处理有没有 XXE。” | 触发，读取反编译策略，先定位 XML 处理类 |
+| 反例 | “列出所有 WebService operation。” | 不触发，使用 `java-route-mapper` |
+| 反例 | “追踪这个 XML 字符串到哪个方法。” | 不触发或仅上游，使用 `java-route-tracer`；若要求判定 XXE 再触发 |
+| 反例 | “检查 xstream 版本 CVE。” | 不触发，使用 `java-vuln-scanner` |
+| 边界例 | `DocumentBuilderFactory` 解析服务端固定 XML 配置 | 记录解析点，通常非漏洞或加固建议 |
+| 边界例 | `SAXReader` 无防护但输入来自数据库 XML 字段 | 待验证或条件成立，取决于数据库字段是否外部可控 |
+| 边界例 | SOAP endpoint 存在，但业务代码未直接解析 XML | 不下 XXE 结论，记录框架解析边界 |
+| 失败案例 | 把所有 `parse()` 命中都写成确认漏洞 | 不合格，缺输入可控性和防护分析 |
+| 失败案例 | 输出文件读取或 OOB payload | 不合格，违反安全边界 |
+| 失败案例 | 把缺实现的 XML 工具类写成非漏洞 | 不合格，缺真实实现证据 |

@@ -1,304 +1,110 @@
-# XXE 审计反编译策略指南
+# XXE 审计反编译策略
 
-## 目录
+源码缺失、只有 `.class/.jar/.war` 或上游调用链停在 XML 工具类、SOAP handler、Manager/Service 方法时加载本文件。目标是补足 XML 解析实现、防护配置和输入来源证据，不是全量反编译项目。
 
-- [何时反编译](#何时反编译)
-- [反编译工具使用](#反编译工具使用)
-- [XML 解析类识别与定位](#xml-解析类识别与定位)
-- [反编译结果检查](#反编译结果检查)
-- [常见问题](#常见问题)
+通用反编译工具选择、CFR 获取方式和失败处理可参考 `../java-shared/DECOMPILE_STRATEGY.md`。本文件只描述 XXE 审计的目标选择和证据记录。
 
----
+## 何时需要反编译
 
-## 何时反编译
+必须考虑反编译：
 
-### 必须反编译的场景
+- `java-route-tracer` 只追踪到 `UNCONFIRMED` XML sink、XML 工具类、SOAP handler 或 Manager/Service 方法。
+- 源码缺少实现类，但 `WEB-INF/classes`、`BOOT-INF/classes`、`target/classes`、`build/classes` 中存在字节码。
+- XML 解析逻辑在业务 jar、公共工具 jar、WebService jar 或部署包中。
+- 需要确认 `setFeature`、resolver、`XMLInputFactory` property、`accessExternal*` 是否在真实实例上生效。
 
-1. **项目只有编译后的字节码**
-   - WAR/JAR 包部署，无源码
-   - 第三方依赖中的 XML 处理组件
+不需要反编译：
 
-2. **XML 解析类定义在 .class 文件中**
-   - 自定义 XML 工具类
-   - Servlet/Controller 中的 XML 处理
-   - WebService/SOAP 处理器
+- 源码、配置或反编译结果已经能证明解析器、防护和输入来源。
+- 只缺少 JDK/JAXP/dom4j/JDOM 框架核心类。
+- 当前任务只做路由枚举或调用链追踪，不做 XXE 判定。
 
-3. **需要检查 XML 解析配置**
-   - 确认是否设置了安全特性
-   - 追踪解析器工厂的配置链
-   - 检查自定义 EntityResolver
+## 目标优先级
 
-### 不需要反编译的场景
+| 优先级 | 目标 | 原因 |
+|--------|------|------|
+| P0 | 上游调用链直接命中的 XML 解析类 | 最可能决定当前结论 |
+| P0 | `*Xml*`、`*XML*`、`*Parser*`、`*Sax*`、`*Dom*` 工具类 | 常见解析封装 |
+| P1 | Servlet/Controller/Action/WebService/Endpoint/Handler | 补足入口和输入来源 |
+| P1 | SOAP/CXF/JAX-WS handler、Interceptor | 可能处理原始 XML |
+| P2 | Service/Manager 调用方 | 补足参数传递和分支条件 |
+| P2 | 自定义 EntityResolver/XMLResolver/LSResourceResolver | 判断 resolver 是否真正拒绝外部实体 |
 
-1. 源码已存在且可读取
-2. 标准 XML 解析器框架核心类
-3. Spring 配置文件可直接读取
+## 定位方法
 
----
-
-## 反编译工具使用
-
-### CFR CLI 反编译器
-
-> 详细的 CFR 获取策略和通用调用方式参见 `java-shared/DECOMPILE_STRATEGY.md`。
-
-#### 单个文件反编译
+先用轻量搜索定位候选：
 
 ```bash
-# 反编译单个 XML 处理类
-java -jar {CFR_JAR} /path/to/WEB-INF/classes/com/example/util/XmlParser.class --outputdir {output_path}/decompiled
+find . -name "*Xml*.class" -o -name "*XML*.class" -o -name "*Parser*.class" -o -name "*Sax*.class" -o -name "*Dom*.class"
+find . -name "*Servlet.class" -o -name "*Controller.class" -o -name "*Action.class" -o -name "*WebService*.class" -o -name "*Handler.class"
+rg -a "DocumentBuilderFactory|SAXParserFactory|XMLReaderFactory|SAXReader|SAXBuilder|XMLInputFactory|TransformerFactory|SchemaFactory|Unmarshaller|InputSource|StreamSource" .
 ```
 
-#### 目录反编译
+从配置定位：
 
-```bash
-# 递归反编译整个工具包
-find /path/to/WEB-INF/classes/com/example/util -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
+- `web.xml` servlet/filter/listener。
+- Spring XML `<bean class="com.example.XmlParser">`。
+- CXF/JAX-WS endpoint、interceptor、handler chain。
+- `applicationContext.xml` 中的 XML 工具 bean。
 
-#### 批量文件反编译
+## 反编译范围控制
 
-```bash
-# 反编译多个 XML 相关类
-java -jar {CFR_JAR} /path/to/XmlUtil.class /path/to/XmlParser.class /path/to/SoapHandler.class /path/to/XmlServlet.class --outputdir {output_path}/decompiled
-```
+推荐顺序：
 
-#### 检查 Java 环境
+1. 只反编译当前入口调用链或搜索命中的 1 到 5 个 XML 候选类。
+2. 如果解析逻辑在工具类，补充反编译调用方以确认输入来源。
+3. 如果存在自定义 resolver，补充反编译 resolver。
+4. 如果仍找不到解析 sink 或防护配置，记录不可确认，不扩大为确认漏洞。
 
-```bash
-# 检查 Java 版本
-java -version
+避免：
 
-# 验证 CFR 是否可用
-java -jar {CFR_JAR} --help
+- 无条件反编译整个 `WEB-INF/lib`。
+- 因类名包含 `Xml` 就输出漏洞。
+- 在反编译失败时编造源码行号、调用链或解析器配置。
+- 引用不存在的 `decompiled` 路径作为证据。
 
-# 如果 CFR 不存在，下载
-curl -L -o {output_path}/cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
-```
+## 证据记录
 
----
+报告中必须标注：
 
-## XML 解析类识别与定位
-
-### 按类名模式定位
-
-```bash
-# XML 工具类
-find . -name "*Xml*.class" -o -name "*XML*.class"
-find . -name "*Parser*.class" -o -name "*Parse*.class"
-find . -name "*Sax*.class" -o -name "*SAX*.class"
-find . -name "*Dom*.class" -o -name "*DOM*.class"
-
-# Servlet/Controller
-find . -name "*Servlet.class" -o -name "*Controller.class"
-
-# WebService/SOAP
-find . -name "*WebService*.class" -o -name "*Soap*.class" -o -name "*WS*.class"
-find . -name "*Endpoint*.class" -o -name "*Handler*.class"
-```
-
-**反编译目标：**
-
-```python
-xxe_classes = [
-    "*Xml*.class", "*XML*.class",
-    "*Parser*.class", "*Parse*.class",
-    "*Sax*.class", "*SAX*.class",
-    "*Dom*.class", "*DOM*.class",
-    "*Soap*.class", "*WS*.class"
-]
-```
-
-### 按字节码特征定位
-
-```bash
-# 搜索包含 XML 解析器导入的 class 文件
-find . -name "*.class" -exec strings {} \; | grep -l "XMLReaderFactory\|SAXBuilder\|SAXReader\|SAXParserFactory\|DocumentBuilderFactory"
-
-# 搜索包含 InputSource 的类
-find . -name "*.class" -exec strings {} \; | grep -l "org.xml.sax.InputSource"
-```
-
-### 从配置文件定位
-
-#### Spring 配置
-
-```xml
-<!-- applicationContext.xml -->
-<bean id="xmlParser" class="com.example.util.XmlParser"/>
-```
-
-**提取类路径：** `com.example.util.XmlParser`
-**对应 class 文件：** `WEB-INF/classes/com/example/util/XmlParser.class`
-
-#### web.xml Servlet 配置
-
-```xml
-<servlet>
-    <servlet-name>xmlServlet</servlet-name>
-    <servlet-class>com.example.servlet.XmlServlet</servlet-class>
-</servlet>
-```
-
-**提取类路径：** `com.example.servlet.XmlServlet`
-
----
-
-## 反编译结果检查
-
-### 检查要点
-
-反编译后重点关注：
-
-```java
-// 1. 解析器创建 — 确认使用了哪种解析器
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-
-// 2. 安全特性设置 — 是否设置了防护
-factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);  // 有则安全
-
-// 3. 输入来源 — XML 数据从哪来
-builder.parse(new InputSource(request.getInputStream()));  // 用户可控
-
-// 4. 结果使用 — 解析结果如何处理
-String value = root.getTextContent();
-response.getWriter().write(value);  // 回显到 HTTP 响应
-```
-
-### 示例检查
-
-```java
-// 反编译后的 XmlParser 示例
-public class XmlParser {
-
-    // ❌ 危险：未设置安全特性，用户输入直接解析
-    public Document parseXml(InputStream inputStream) {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setValidating(false);  // 这不能防 XXE！
-        DocumentBuilder builder = factory.newDocumentBuilder();
-        return builder.parse(new InputSource(inputStream));
-    }
-
-    // ✅ 安全：已设置防护
-    public Document parseXmlSafe(InputStream inputStream) {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        DocumentBuilder builder = factory.newDocumentBuilder();
-        return builder.parse(new InputSource(inputStream));
-    }
-}
-```
-
-**提取信息：**
-
-| 方法 | 解析器 | 安全配置 | 漏洞判定 |
-|------|--------|----------|----------|
-| parseXml | DocumentBuilderFactory | ❌ 仅 setValidating(false) | **高危** |
-| parseXmlSafe | DocumentBuilderFactory | ✅ disallow-doctype-decl | 安全 |
-
----
-
-## 反编译策略
-
-### 策略 1: 最小化反编译（推荐）
-
-```python
-# 只反编译与 XML 解析直接相关的类
-
-# 步骤 1: 从配置文件和类名识别 XML 处理类
-xml_classes = find_xml_classes()
-
-# 步骤 2: 反编译 XML 相关类
-for cls in xml_classes:
-    decompile_file(cls)
-
-# 步骤 3: 检查依赖，反编译调用者
-callers = extract_xml_callers(xml_classes)
-for caller in callers:
-    decompile_file(caller)
-```
-
-### 策略 2: 层级反编译
-
-```python
-# 第一层: 反编译 XML 工具类
-layer1 = ["*Xml*.class", "*Parser*.class", "*Sax*.class"]
-decompile_by_pattern(layer1)
-
-# 第二层: 反编译 Servlet/Controller（追踪输入来源）
-layer2 = ["*Servlet.class", "*Controller.class", "*Action.class"]
-decompile_by_pattern(layer2)
-
-# 第三层: 反编译 WebService（SOAP 处理）
-layer3 = ["*WebService*.class", "*Soap*.class", "*Endpoint*.class"]
-decompile_by_pattern(layer3)
-```
-
----
-
-## 反编译结果记录
-
-输出时必须标注反编译来源：
-
-```markdown
-### [XXE-001] XXE 注入 - 未防护的 DocumentBuilderFactory
-
-| 项目 | 信息 |
+| 项目 | 写法 |
 |------|------|
-| 漏洞等级 | 高 |
-| 位置 | XmlParser.parseXml (XmlParser.java:15) |
-| 来源 | **反编译 WEB-INF/classes/com/example/util/XmlParser.class** |
-| 解析器 | DocumentBuilderFactory |
+| 来源文件 | `来源：反编译 WEB-INF/classes/com/acme/XmlParser.class` |
+| 行号 | 有行号写反编译文件行号；无行号写“反编译结果无可靠源码行号” |
+| 可信度 | 说明是否混淆、反编译失败、注解缺失、方法体缺失 |
+| 限制 | 缺入口、缺 resolver 实现、缺防护分支时明确标注 |
 
-漏洞描述:
-- DocumentBuilderFactory 未设置 disallow-doctype-decl
-- 仅设置 setValidating(false)，不能防止 XXE
-- 输入来源为 InputStream 参数，可能用户可控
+证据路径必须真实存在，或能明确指向已读取的 class/jar 来源。若只看到 class 文件但未成功反编译，实现证据仍为缺失，结论应为“不可确认”。
 
-漏洞代码:
-\```java
-DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-factory.setValidating(false);
-DocumentBuilder builder = factory.newDocumentBuilder();
-return builder.parse(new InputSource(inputStream));
-\```
-```
+## 反编译后检查清单
 
----
+优先提取：
 
-## 常见问题
+- XML parser/factory 创建位置。
+- `parse`、`read`、`build`、`unmarshal`、`transform`、`newSchema` 等执行点。
+- `setFeature`、`setProperty`、`setAttribute`、`setExpandEntityReferences`、`setXIncludeAware`、`setEntityResolver`。
+- `XMLConstants.ACCESS_EXTERNAL_DTD`、`ACCESS_EXTERNAL_SCHEMA`、`ACCESS_EXTERNAL_STYLESHEET`。
+- 输入包装：`InputStream`、`Reader`、`StringReader`、`InputSource`、`StreamSource`、`SAXSource`。
+- 输出路径：response、model、返回对象、日志、异常、文件写入。
+- 分支条件：Content-Type、文件后缀、配置开关、角色、异常路径。
 
-### 问题 1: 反编译失败
+## 失败处理
 
-**解决方案：**
-```bash
-# 检查 Java 版本
-java -version
+| 情况 | 处理 |
+|------|------|
+| 找不到 class/jar | 记录缺失实现，不下漏洞结论 |
+| 反编译失败 | 记录工具错误和受影响类，结论降为不可确认 |
+| 字节码只出现 parser 字符串 | 作为候选，不下漏洞结论 |
+| 只反编译到调用方 | 不能按调用方名称推断 parser 防护，目标仍不可确认 |
+| 自定义 resolver 未读 | 不把 resolver 当安全防护 |
+| 多个 parser 实现 | 分别列出已确认和未确认实现，不混成一个结论 |
 
-# 验证 CFR 是否可用
-java -jar {CFR_JAR} --help
+## 与 `UNCONFIRMED` 的关系
 
-# 如果 CFR 不存在，下载
-curl -L -o {output_path}/cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
-```
+如果上游 `java-route-tracer` 把 sink 标为 `UNCONFIRMED`，本 skill 必须先完成以下任一项后才能判 XXE：
 
-### 问题 2: setFeature 调用被混淆
+- 找到源码实现并确认 XML 解析 sink。
+- 找到反编译实现并确认 XML 解析 sink 和防护配置。
+- 找到配置或字节码证据，能同时证明解析 sink、输入来源和防护状态。
 
-**表现：** 反编译后 Feature URI 字符串可能被拆分或混淆
-
-**处理：** 搜索 `setFeature` 方法调用，逐一检查参数值
-
-### 问题 3: 工厂模式封装
-
-**表现：** XML 解析器通过工厂方法或 Spring Bean 创建
-
-**处理：** 追踪工厂方法的实现，确认安全配置是否在工厂中设置
-
-### 问题 4: 自定义 EntityResolver
-
-**表现：**
-```java
-builder.setEntityResolver(new CustomEntityResolver());
-```
-
-**处理：** 必须反编译 `CustomEntityResolver` 类，检查是否真正阻止了外部实体加载
+若三者都没有，输出“不可确认：缺少 XML 解析实现证据”，不得写“疑似 XXE 已确认”。
