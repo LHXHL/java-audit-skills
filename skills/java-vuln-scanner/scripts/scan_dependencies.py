@@ -58,6 +58,28 @@ class ModuleResult:
             count[v.severity] = count.get(v.severity, 0) + 1
         return count
 
+    @property
+    def matched_dependency_keys(self) -> set[Tuple[str, str, str]]:
+        keys: set[Tuple[str, str, str]] = set()
+        for vuln in self.vulnerabilities:
+            dep = vuln.matched_dependency
+            if dep:
+                keys.add((dep.source, dep.artifact_id, dep.version))
+        return keys
+
+    @property
+    def matched_dependency_count(self) -> int:
+        return len(self.matched_dependency_keys)
+
+    @property
+    def unmatched_dependency_count(self) -> int:
+        matched = self.matched_dependency_keys
+        return sum(
+            1
+            for dep in self.dependencies
+            if (dep.source, dep.artifact_id, dep.version) not in matched
+        )
+
 
 @dataclass
 class ScanResult:
@@ -74,6 +96,24 @@ class ScanResult:
         return sum(len(m.vulnerabilities) for m in self.modules.values())
 
     @property
+    def matched_dependency_instances(self) -> int:
+        return sum(m.matched_dependency_count for m in self.modules.values())
+
+    @property
+    def unmatched_dependency_instances(self) -> int:
+        return sum(m.unmatched_dependency_count for m in self.modules.values())
+
+    @property
+    def unique_matched_component_versions(self) -> int:
+        pairs = set()
+        for module in self.modules.values():
+            for vuln in module.vulnerabilities:
+                dep = vuln.matched_dependency
+                if dep:
+                    pairs.add((dep.artifact_id, dep.version))
+        return len(pairs)
+
+    @property
     def severity_count(self) -> Dict[str, int]:
         count = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
         for m in self.modules.values():
@@ -86,9 +126,16 @@ class ScanResult:
             "scan_target": self.scan_target,
             "total_dependencies": self.total_dependencies,
             "total_vulnerabilities": self.total_vulnerabilities,
+            "matched_dependency_instances": self.matched_dependency_instances,
+            "unmatched_dependency_instances": self.unmatched_dependency_instances,
+            "unique_matched_component_versions": self.unique_matched_component_versions,
             "severity_count": self.severity_count,
             "modules": {
                 path: {
+                    "dependency_count": len(m.dependencies),
+                    "matched_dependency_instances": m.matched_dependency_count,
+                    "unmatched_dependency_instances": m.unmatched_dependency_count,
+                    "vulnerability_count": len(m.vulnerabilities),
                     "dependencies": [
                         {"coordinate": d.coordinate, "source": d.source}
                         for d in m.dependencies
@@ -301,7 +348,8 @@ def scan_vulnerabilities(dependencies: List[Dependency], rules: Dict) -> List[Vu
 
             for dep in dependencies:
                 check_str = f"{dep.artifact_id}:{dep.version}"
-                if regex.search(check_str):
+                match = regex.fullmatch(check_str) or regex.search(check_str)
+                if match and not is_partial_numeric_match(check_str, match):
                     vuln = Vulnerability(
                         name=rule.get('name', 'Unknown'),
                         severity=severity,
@@ -313,6 +361,22 @@ def scan_vulnerabilities(dependencies: List[Dependency], rules: Dict) -> List[Vu
                     vulnerabilities.append(vuln)
 
     return vulnerabilities
+
+
+def is_partial_numeric_match(value: str, match: re.Match) -> bool:
+    """
+    Reject prefix matches inside a numeric version token.
+
+    Many rules intentionally end with a dot to match a full version family such
+    as 1.2.x. Those remain valid. The problematic case is a pattern ending on a
+    digit and matching only the prefix of a larger numeric token, e.g. matching
+    2.5.1 inside 2.5.17.
+    """
+    if match.end() >= len(value):
+        return False
+    matched = match.group(0)
+    next_char = value[match.end()]
+    return bool(matched and matched[-1].isdigit() and next_char.isdigit())
 
 
 def scan_target(target_path: str, rules_path: str, group_depth: int = 2) -> ScanResult:
@@ -393,9 +457,9 @@ def get_relative_source(source: str, scan_target: str) -> str:
 
 
 def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
-    """生成按模块分组的 Markdown 格式报告"""
+    """生成按模块分组的原始版本命中 Markdown。"""
     lines = [
-        f"# Java 组件漏洞扫描报告",
+        f"# Java 组件版本命中原始扫描结果",
         f"",
         f"**扫描目标**: `{result.scan_target}`",
         f"",
@@ -405,26 +469,26 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
         f"|------|------|",
         f"| 模块数量 | {len(result.modules)} |",
         f"| 依赖总数 | {result.total_dependencies} |",
-        f"| 漏洞总数 | {result.total_vulnerabilities} |",
+        f"| 规则命中总数 | {result.total_vulnerabilities} |",
     ]
 
     severity_count = result.severity_count
     lines.extend([
-        f"| 🔴 严重 (Critical) | {severity_count['critical']} |",
-        f"| 🟠 高危 (High) | {severity_count['high']} |",
-        f"| 🟡 中危 (Medium) | {severity_count['medium']} |",
-        f"| 🔵 低危 (Low) | {severity_count['low']} |",
+        f"| Critical 规则等级 | {severity_count['critical']} |",
+        f"| High 规则等级 | {severity_count['high']} |",
+        f"| Medium 规则等级 | {severity_count['medium']} |",
+        f"| Low 规则等级 | {severity_count['low']} |",
         f"",
     ])
 
-    # 模块风险摘要
+    # 模块命中摘要
     if len(result.modules) > 1:
-        lines.append("## 模块风险摘要")
+        lines.append("## 模块命中摘要")
         lines.append("")
-        lines.append("| 模块 | 依赖数 | 严重 | 高危 | 中危 | 低危 | 总漏洞 |")
+        lines.append("| 模块 | 依赖数 | Critical | High | Medium | Low | 规则命中 |")
         lines.append("|------|--------|------|------|------|------|--------|")
 
-        # 按漏洞数量排序
+        # 按规则命中数量排序
         sorted_modules = sorted(
             result.modules.items(),
             key=lambda x: (x[1].severity_count['critical'], x[1].severity_count['high'], len(x[1].vulnerabilities)),
@@ -433,16 +497,16 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
 
         for module_path, module in sorted_modules:
             sc = module.severity_count
-            total_vulns = len(module.vulnerabilities)
+            total_hits = len(module.vulnerabilities)
             lines.append(
                 f"| `{module_path}` | {len(module.dependencies)} | "
-                f"{sc['critical']} | {sc['high']} | {sc['medium']} | {sc['low']} | {total_vulns} |"
+                f"{sc['critical']} | {sc['high']} | {sc['medium']} | {sc['low']} | {total_hits} |"
             )
         lines.append("")
 
-    # 按模块输出详细漏洞信息
+    # 按模块输出详细规则命中
     if result.total_vulnerabilities > 0:
-        lines.append("## 漏洞详情（按模块分组）")
+        lines.append("## 规则命中详情（按模块分组）")
         lines.append("")
 
         # 按严重程度排序模块
@@ -456,7 +520,7 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
             if not module.vulnerabilities:
                 continue
 
-            lines.append(f"### 📁 {module_path}")
+            lines.append(f"### {module_path}")
             lines.append("")
 
             # 按严重级别分组漏洞
@@ -466,15 +530,15 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
                     continue
 
                 severity_label = {
-                    'critical': '🔴 严重',
-                    'high': '🟠 高危',
-                    'medium': '🟡 中危',
-                    'low': '🔵 低危'
+                    'critical': 'Critical 规则等级',
+                    'high': 'High 规则等级',
+                    'medium': 'Medium 规则等级',
+                    'low': 'Low 规则等级'
                 }[severity]
 
                 lines.append(f"#### {severity_label}")
                 lines.append("")
-                lines.append("| 组件 | 版本 | 来源文件 | 漏洞名称 | 描述 |")
+                lines.append("| 组件 | 版本 | 来源文件 | 规则名称 | 规则描述 |")
                 lines.append("|------|------|----------|----------|------|")
 
                 # 去重显示
@@ -496,7 +560,7 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
     else:
         lines.append("## 扫描结果")
         lines.append("")
-        lines.append("✅ 未发现已知漏洞")
+        lines.append("未发现本地规则命中。")
         lines.append("")
 
     # 依赖列表（按模块分组）
@@ -531,7 +595,7 @@ def get_output_path(target_path: str, ext: str = 'md') -> Tuple[str, str]:
     """
     根据扫描目标生成输出目录和文件路径
     返回: (输出目录, 输出文件路径)
-    格式: {项目名}_audit/vuln_report/{项目名}_vuln_report_{timestamp}.{ext}
+    格式: {项目名}_audit/vuln_report/{项目名}_vuln_scan_raw_{timestamp}.{ext}
     """
     from datetime import datetime
 
@@ -551,17 +615,17 @@ def get_output_path(target_path: str, ext: str = 'md') -> Tuple[str, str]:
 
     # 生成带时间戳的文件名
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{project_name}_vuln_report_{timestamp}.{ext}"
+    filename = f"{project_name}_vuln_scan_raw_{timestamp}.{ext}"
 
     return output_dir, os.path.join(output_dir, filename)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Java 组件漏洞扫描器（支持按模块分组）')
+    parser = argparse.ArgumentParser(description='Java 组件版本命中扫描器（支持按模块分组）')
     parser.add_argument('target', help='扫描目标 (pom.xml, build.gradle, jar文件或目录)')
     parser.add_argument('--rules', '-r', required=True, help='漏洞规则文件路径')
     parser.add_argument('--format', '-f', choices=['json', 'markdown'], default='markdown', help='输出格式')
-    parser.add_argument('--output', '-o', help='输出文件路径（不指定则自动生成到 {项目名}_vuln_scanner/ 目录）')
+    parser.add_argument('--output', '-o', help='输出文件路径（不指定则自动生成到 {项目名}_audit/vuln_report/ 目录）')
     parser.add_argument('--depth', '-d', type=int, default=2, help='模块分组深度 (默认: 2)')
     parser.add_argument('--no-deps', action='store_true', help='不显示依赖列表')
     parser.add_argument('--no-save', action='store_true', help='不保存文件，仅输出到终端')
@@ -617,16 +681,16 @@ def main():
         print(f"\n📊 扫描摘要:")
         print(f"   模块数量: {len(result.modules)}")
         print(f"   依赖总数: {result.total_dependencies}")
-        print(f"   漏洞总数: {result.total_vulnerabilities}")
+        print(f"   规则命中总数: {result.total_vulnerabilities}")
         sc = result.severity_count
         if sc['critical'] > 0:
-            print(f"   🔴 严重: {sc['critical']}")
+            print(f"   Critical 规则等级: {sc['critical']}")
         if sc['high'] > 0:
-            print(f"   🟠 高危: {sc['high']}")
+            print(f"   High 规则等级: {sc['high']}")
         if sc['medium'] > 0:
-            print(f"   🟡 中危: {sc['medium']}")
+            print(f"   Medium 规则等级: {sc['medium']}")
         if sc['low'] > 0:
-            print(f"   🔵 低危: {sc['low']}")
+            print(f"   Low 规则等级: {sc['low']}")
 
 
 if __name__ == '__main__':
