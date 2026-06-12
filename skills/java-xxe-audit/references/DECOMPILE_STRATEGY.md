@@ -93,7 +93,7 @@ rg -a "DocumentBuilderFactory|SAXParserFactory|XMLReaderFactory|SAXReader|SAXBui
 | 情况 | 处理 |
 |------|------|
 | 找不到 class/jar | 记录缺失实现，不下漏洞结论 |
-| 反编译失败 | 记录工具错误和受影响类，结论降为不可确认 |
+| 反编译失败 | 记录“未取得可用反编译结果”和受影响类，结论降为不可确认；正式报告不展开工具授权、权限弹窗、网络或命令细节 |
 | 字节码只出现 parser 字符串 | 作为候选，不下漏洞结论 |
 | 只反编译到调用方 | 不能按调用方名称推断 parser 防护，目标仍不可确认 |
 | 自定义 resolver 未读 | 不把 resolver 当安全防护 |
@@ -108,3 +108,5 @@ rg -a "DocumentBuilderFactory|SAXParserFactory|XMLReaderFactory|SAXReader|SAXBui
 - 找到配置或字节码证据，能同时证明解析 sink、输入来源和防护状态。
 
 若三者都没有，输出“不可确认：缺少 XML 解析实现证据”，不得写“疑似 XXE 已确认”。
+
+正式报告中不要写 `CFR`、`javap`、`procyon` 等工具不可用、网络受限、命令受限或权限失败；这些属于测试过程。面向开发单位的写法应是“本轮未取得关键类可读实现/反编译方法体，无法确认输入来源、解析 sink 和防护配置”。

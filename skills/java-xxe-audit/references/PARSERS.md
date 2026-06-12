@@ -15,6 +15,8 @@
 
 状态必须用中文：确认漏洞、条件成立、待验证、不可确认、非漏洞。
 
+一条映射行只能有一个状态。若同一入口同时有安全 wrapper 和未确认底层 parser，按未确认片段状态记录为“待验证”或“不可确认”，并在依据中说明安全部分；不要写混合状态。
+
 ## 通用有效防护
 
 优先接受以下防护：
@@ -224,12 +226,19 @@ projectXmlUtil.fromXML(xml, target);
 - 只看到 `XStream.fromXML(String)` 和用户可控 XML，但无法确认底层 driver 外部实体行为时，标“待验证”，不要直接写“非漏洞”。
 - 只有能证明输入不可控、底层 parser 安全配置充分，或 `fromXML` 未被执行，才可写“非漏洞”。
 - 不输出 gadget 类名、链式 payload、组件 CVE、CVSS 或修复版本。
+- `addPermission`、`allowTypes`、`denyTypes`、`securityFramework` 主要约束对象类型和反序列化权限，不是 XXE 外部实体防护；缺少这些配置不能作为 XXE 防护缺口证据。
+- 若未确认 XStream driver/parser 是否支持外部实体解析，结论最高为“待验证”，不能写“条件成立”。
+- 若无法确认目标对象 XML 结构，不能输出半截 `DOCTYPE` payload 或猜测对象字段；保留在第 4 节并补证对象结构。
+- 正式 XXE 报告不列 XStream、XPP3、CXF、JAXB 等具体版本清单；如需版本风险，交给组件扫描专项。
 
 误判点：
 
 - 把 `XmlUtil.fromXML` 全部交给反序列化专项，忽略它仍然会解析 XML。
 - 只凭 `xstream-1.4.x.jar` 文件名判定安全或不安全。
+- 把 XStream 缺少 `addPermission`、`allowTypes` 或 security framework 当作 XXE 防护缺口。
+- 在底层 XStream driver 行为未知、对象 XML 结构未知时输出 Burp 请求和 payload。
 - 看到 `processAnnotations`、`alias`、DTO 注解就写 XXE；这些只说明映射关系，不说明外部实体行为。
+- 在 XXE 报告正文写“依据 skill 规则”、`hard rule` 或列组件版本清单。
 
 ## 输入来源判断
 
@@ -259,6 +268,8 @@ SOAP/WebService 入口：
 - 服务端硬编码 XML。
 - 只由部署人员维护的 Spring 配置。
 
+`XML 解析器映射` 只记录真实 XML parser/transformer/unmarshaller/fromXML sink 或候选 XML sink。SOAP 配置、依赖版本、WebService 路由、过滤器状态等上下文信息可以放在审计概述、候选依据或审计结论中，但不要作为映射行，也不要计入非漏洞数量。
+
 ## 回显和 OOB 条件
 
 回显证据：
@@ -270,8 +281,9 @@ SOAP/WebService 入口：
 无回显：
 
 - 可以写“Blind/OOB 条件待验证”，但不要声称触发了外带。
-- 不输出 OOB DTD、外带服务器地址、文件读取 payload，也不指导构造实体声明、外部实体引用或带目标主机的验证 XML。
-- 授权验证建议应优先写补证路径，例如确认 parser 版本、读取 driver 配置、使用本地单元测试 harness 观察 resolver 是否被调用；不要给可复制请求或实体内容。
+- 确认漏洞或条件成立项可以按 `VALIDATION_GUIDE.md` 输出受控 canary payload；待验证、不可确认和非漏洞项不能输出可复制请求或 payload。
+- 不输出真实外带服务器、真实敏感文件路径、内网地址、云元数据地址、数据外带模板或实体扩展 DoS。
+- 授权验证说明应标注“仅限授权测试环境”，预期观察只能写受控 canary 请求、resolver 拒绝日志、受控解析错误或业务返回差异，不得声称已验证成功。
 
 ## 常见误判
 
@@ -283,3 +295,7 @@ SOAP/WebService 入口：
 - 看到 `DocumentBuilderFactory` 解析固定配置文件就写漏洞。
 - 只凭依赖版本推断安全或不安全，缺少实际 parser 配置证据。
 - 把 `XStream.fromXML` 写成“非 XXE”而未确认底层 driver 或 parser 外部实体行为。
+- 待验证或不可确认项输出 Burp 请求、DOCTYPE payload、外部实体 payload。
+- 确认漏洞或条件成立项没有 Burp Suite 请求和低风险 payload。
+- 报告写工具权限、网络限制、命令失败、模型规则编号或测试过程，而不是代码证据和证据缺口。
+- 在 XXE 报告中展开组件版本、CVE 编号或 CVSS 事项；这些属于组件扫描边界。
