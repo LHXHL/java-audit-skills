@@ -12,6 +12,7 @@
 - 源码中缺少实现类，但 `WEB-INF/classes`、`BOOT-INF/classes`、`target/classes`、`build/classes` 中存在字节码。
 - SQL 构造逻辑在第三方业务 jar、内部公共 DAO jar 或部署包中。
 - 需要确认 MyBatis Provider、Hibernate Repository、自定义 BaseDao 的真实实现。
+- 项目呈现 class-heavy 形态：`.class` 数量明显多于 `.java`，但已发现 `sql.xml`、DAO/Repository/Mapper、`JdbcSupport`、`BaseDao`、WebService/Controller 入口或上游调用链候选。
 
 不需要反编译：
 
@@ -40,6 +41,15 @@ find . -name "*Dao.class" -o -name "*Repository.class" -o -name "*Mapper.class" 
 find . -name "*Mapper.xml" -o -name "*Dao.xml"
 ```
 
+Spring XML SQL 模板的消费方定位：
+
+1. 先从 `sql.xml`、`*-sql.xml`、Spring Bean XML 中提取含 `{0}`、`{1}`、`%s`、`${}`、`:param`、`?` 的 SQL 模板 bean id。
+2. 对每个模板 bean id 搜索源码、反编译结果和字节码字符串引用：字段名、setter、`@Resource`、`getBean("<beanId>")`、`MessageFormat.format`、自定义 formatter、`String.format`。
+3. class-heavy 项目中，如果源码搜索无结果，优先对包含模板 bean id、`MessageFormat`、`createSQLQuery`、`getListBySql`、`JdbcTemplate` 的候选 class 做字节码检查。
+4. 只看到 SQL 模板本身不能确认漏洞；必须定位消费方、formatter 语义、参数来源和执行 API。
+5. 若模板消费方能确认 `MessageFormat.format(template, userValue...)` 后直接进入 SQL 执行 API，且无绑定/白名单/强类型保护，可以进入确认漏洞或条件成立判定。
+6. 若消费方未定位，报告应把模板列为“待验证/不可确认”，并在补证路径里写清要搜索的 bean id 和候选 class 方向。
+
 从配置中定位类：
 
 - Spring XML `<bean class="com.example.SomeClass">`
@@ -57,11 +67,23 @@ find . -name "*Mapper.xml" -o -name "*Dao.xml"
 3. 如果 SQL 由 Provider/Builder 构造，再补充反编译 Provider/Builder。
 4. 若仍找不到 SQL sink，记录“实现未确认”，不要扩大为确认漏洞。
 
+class-heavy 项目的最小检查门槛：
+
+1. 先统计 `.java`、`.class`、Mapper XML/SQL XML 的存在情况，判断是否需要候选类检查。
+2. 至少选择 3 到 8 个与当前 SQL 候选直接相关的类，优先级为：SQL 模板消费方、入口调用链末端、公共 DAO/BaseDao、JdbcSupport/SqlBuilder、ManagerImpl。
+3. 对每个候选类先做轻量检查：常量池或字节码中是否出现 `createSQLQuery`、`prepareStatement`、`JdbcTemplate.query`、`Statement`、`MessageFormat`、`StringBuilder.append`、`setParameter`、`setObject`、`setParameterList`、`sqlRestriction`。
+4. 只要字节码能显示 SQL 执行 API、参数绑定或字符串拼接关系，就把它作为“字节码检查证据”记录；没有源码行号时不要编造行号。
+5. 如果字节码检查仍不足以确定参数来源或 formatter 语义，可以降为“待验证/不可确认”，但必须说明已检查哪些候选 class、为什么还缺证据。
+6. 如果候选 class 存在但完全未检查，不得直接写“仅存在 class 文件，未取得方法体”作为最终限制。
+
+可以使用通用反编译器，也可以使用 JDK 自带的字节码反汇编作为降级手段。正式报告中不要写具体工具不可用或权限失败，只写“字节码检查”“未取得可读源码级反编译结果”等证据状态。
+
 避免：
 
 - 无条件反编译整个依赖目录。
 - 因类名包含 `Dao` 就批量输出漏洞。
 - 在反编译失败时编造源码行号或 SQL 语句。
+- 目标 class 可以做字节码检查时，直接把所有 DAO/Manager 归为“未取得方法体”。
 
 ## 证据记录
 
@@ -75,6 +97,13 @@ find . -name "*Mapper.xml" -o -name "*Dao.xml"
 | 限制 | 缺少依赖、接口未解析、多态实现不完整时明确标注 |
 
 证据路径必须真实存在，或能明确指向已读取的 class/jar 来源。禁止写不存在的 `decompiled` 路径作为证据。若只看到 class 文件但未成功反编译，实现证据仍为缺失，结论应为“不可确认”。
+
+如果最终结论包含大量“不可确认”或“待验证”，报告第 1 节或第 5 节必须保留“候选 class 检查结果”表格，至少包含以下列：
+
+| 候选 class | 选择原因 | 字节码/反编译线索 | 仍缺证据 |
+|------------|----------|-------------------|----------|
+
+表格中必须列出真实存在的 class 来源路径或完整类名；“字节码/反编译线索”要写已确认的 SQL API、参数绑定、字符串拼接或 formatter 线索，不能只写“存在 class 文件”；“仍缺证据”写入口到参数的完整数据流、formatter 实现、白名单来源、数据库方言等。
 
 ## SQL 证据提取
 
@@ -109,4 +138,4 @@ find . -name "*Mapper.xml" -o -name "*Dao.xml"
 
 若三者都没有，输出“不可确认：缺少 SQL 实现证据”，不得写“疑似 SQL 注入已确认”。
 
-正式报告中不要写 `CFR`、`javap`、`procyon` 等工具不可用、网络受限、命令受限或权限失败；这些属于测试过程。面向开发单位的写法应是“本轮未取得关键类可读实现/反编译方法体，无法确认参数来源和执行路径”。
+正式报告中不要写 `CFR`、`javap`、`procyon` 等工具不可用、网络受限、命令受限或权限失败；这些属于测试过程。面向开发单位的写法应是“本轮仅取得字节码检查证据，未取得源码级反编译结果，无法确认参数来源和执行路径”，或“本轮未取得关键类可读实现/反编译方法体，无法确认参数来源和执行路径”。
