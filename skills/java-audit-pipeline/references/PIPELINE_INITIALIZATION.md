@@ -102,7 +102,7 @@
 - 运行中可以更新 `pipeline_plan.md`，但不能删除。
 - 进入新阶段前，必须把上一阶段门禁状态更新为“通过”并填写 QA 文件路径。
 - 若进程需要阻塞，`pipeline_plan.md` 与 `pipeline_blocked.md` 的阶段状态必须一致。
-- 若因缺少外部完整 team 生命周期证明而阻塞，`pipeline_plan.md` 中阶段1到阶段5都保持“未启动”，门禁状态写“阻塞”或“未通过”，证据写 `pipeline_blocked.md`；不得把阶段1写成“进行中”。
+- 若因实际无法创建或调度 Claude team agent 而在业务 worker 启动前阻塞，`pipeline_plan.md` 中阶段1到阶段5都保持“未启动”，门禁状态写“阻塞”或“未通过”，证据写 `pipeline_blocked.md`；不得把阶段1写成“进行中”。
 
 ## tmp 与 decompiled/cache
 

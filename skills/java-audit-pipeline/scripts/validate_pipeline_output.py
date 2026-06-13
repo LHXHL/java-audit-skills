@@ -162,12 +162,13 @@ def check_team_execution(output_dir: Path, errors: list[str]) -> None:
 
     if team.exists():
         text = read_text(team)
-        agent_creation_available = re.search(r"\|\s*agent 创建能力\s*\|\s*可用\s*\|", text) is not None
         lifecycle_available = re.search(r"\|\s*完整生命周期能力\s*\|\s*可用\s*\|", text) is not None
-        if blocked.exists() and agent_creation_available:
-            add_error(errors, team, "blocked capability record must not mark agent creation as available without external evidence")
-        if lifecycle_available and (blocked.exists() or not quality.exists()):
-            add_error(errors, team, "claims full team lifecycle is available without a completed quality report")
+        if lifecycle_available and not quality.exists() and not blocked.exists():
+            add_error(errors, team, "claims full team lifecycle is available without a final quality or blocked report")
+        if blocked.exists() and lifecycle_available:
+            blocked_text = read_text(blocked)
+            if re.search(r"无法|未能|失败|关闭未确认|不可用", blocked_text):
+                add_error(errors, team, "blocked pipeline with lifecycle failure must not mark full lifecycle as available")
         if blocked.exists() and re.search(r"TeamCreate|TeamDelete|TaskCreate|TaskUpdate|Agent\s*工具|创建类工具", text):
             add_error(errors, team, "blocked capability record must not cite tool names as lifecycle evidence")
 
