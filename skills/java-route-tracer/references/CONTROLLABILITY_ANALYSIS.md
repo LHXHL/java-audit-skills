@@ -34,7 +34,7 @@
 
 如果一个 sink 同时满足多个类型，主类型写最直接的执行点，备注中写关联类型。例如 XML 输入进入 XStream 时主类型可写 `DESERIALIZE`，备注“XML 格式承载”。
 
-不要凭方法名或类名推断 sink。`getUserBean`、`addUser`、`save`、`query`、`Dao`、`ManagerImpl`、`Repository` 只能说明“下游候选调用”。只有读到真实执行 API、Mapper XML、注解 SQL 或反编译方法体后，才能写具体 sink 类型。
+不要凭方法名或类名推断 sink。`findSomething`、`saveSomething`、`queryByCondition`、`removeById`、`Dao`、`ManagerImpl`、`Repository` 只能说明“下游候选调用”。只有读到真实执行 API、Mapper XML、注解 SQL 或反编译方法体后，才能写具体 sink 类型。
 
 ## 3. 可控性结论
 
@@ -61,7 +61,7 @@
 - Header/Cookie: `@RequestHeader`、`request.getHeader`、`Cookie`。
 - File: `MultipartFile`、`FileItem`、上传流。
 
-参数如果经过 DTO、Map、BeanUtils 或 JSON 字段展开，使用 `source.field` 形式记录，例如 `pageJson.orderBy`。
+参数如果经过 DTO、Map、BeanUtils 或 JSON 字段展开，使用 `source.field` 形式记录，例如 `requestDto.sortField`。
 
 ### 4.2 跟踪 Transform
 
@@ -101,10 +101,10 @@ sink 位置必须包含可验证代码证据：
 
 无法获得行号时，写类方法和关键代码片段，不要编造行号。
 
-如果只能追到接口或业务方法调用，例如 `userManager.getUserBean(loginName)`、`roleManager.addRole(roleBean)`、`ownerManager.save(ownerBean)`：
+如果只能追到接口或业务方法调用，例如 `someManager.findSomething(inputParam)`、`roleService.createRole(roleDto)`、`ownerRepository.saveEntity(ownerDto)`：
 
 - `Sink 类型` 写 `UNCONFIRMED`，或在调用链中写“下游候选调用”。
-- `位置` 写已确认的调用点，例如 `AdminServiceImpl.java:156`。
+- `位置` 写已确认的调用点，例如 `ExampleAction.java:156`。
 - `限制说明` 写“实现类源码/反编译结果缺失，未看到 SQL/文件/XML 等真实 sink”。
 - 不得写 `SQL SELECT`、`SQL INSERT`、`Hibernate session.save`、`WHERE login_name = ?` 等未经源码证实的内容。
 
@@ -115,8 +115,8 @@ sink 位置必须包含可验证代码证据：
 ```markdown
 | 参数 | Source | Transform 摘要 | Guard/覆盖 | Sink 类型 | Sink 位置 | 可控性 | 限制说明 |
 |------|--------|----------------|------------|-----------|-----------|--------|----------|
-| pageJson.orderBy | Body JSON | Page.orderBy -> dao.findSql | 非空时保留 | SQL | AbstractDao.java:123 | 条件可控 | 非空且通过字段白名单时到达 |
-| loginName | SOAP Body | loginName -> userManager.getUserBean | 未确认 | UNCONFIRMED | AdminServiceImpl.java:156 | 未确认 | 未读取 UserManagerImpl，不能推断 SQL sink |
+| requestDto.sortField | Body JSON | requestDto.sortField -> queryBuilder.appendOrderBy | 非空时保留 | SQL | QueryBuilder.java:123 | 条件可控 | 非空且通过字段白名单时到达 |
+| inputParam | SOAP Body | inputParam -> someManager.someBusinessMethod | 未确认 | UNCONFIRMED | ExampleAction.java:156 | 未确认 | 未读取实现类方法体，不能推断 SQL sink |
 ```
 
 当存在多个 sink 时，每个参数和 sink 组合单独一行。

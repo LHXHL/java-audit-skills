@@ -69,7 +69,7 @@ method(param)
 ### 5.3 路径结论
 
 ```markdown
-路径结论: `pageJson.orderBy` 只有在非空且属于 `allowedColumns` 时到达 SQL sink；否则被默认值覆盖或提前返回。调用链证据支持“受限可控”，不支持直接漏洞结论。
+路径结论: `requestDto.sortField` 只有在非空且属于 `allowedColumns` 时到达 SQL sink；否则被默认值覆盖或提前返回。调用链证据支持“受限可控”，不支持直接漏洞结论。
 ```
 
 ## 6. 常见 gotchas
