@@ -145,7 +145,7 @@ class ScanResult:
                             "name": v.name,
                             "severity": v.severity,
                             "affected_component": v.function,
-                            "description": v.description,
+                            "description": sanitize_rule_description(v.description),
                             "matched_dependency": v.matched_dependency.coordinate if v.matched_dependency else None
                         }
                         for v in m.vulnerabilities
@@ -379,6 +379,13 @@ def is_partial_numeric_match(value: str, match: re.Match) -> bool:
     return bool(matched and matched[-1].isdigit() and next_char.isdigit())
 
 
+def sanitize_rule_description(description: str) -> str:
+    """Remove upgrade-version advice from local rule descriptions."""
+    description = re.sub(r"，?建议(升级|迁移)到[^，；。]*[，；。]?", "", description)
+    description = re.sub(r"，?建议升级[^，；。]*[，；。]?", "", description)
+    return description.strip("，；。 ")
+
+
 def scan_target(target_path: str, rules_path: str, group_depth: int = 2) -> ScanResult:
     """扫描目标文件或目录，按模块分组"""
     result = ScanResult(scan_target=target_path)
@@ -549,7 +556,7 @@ def format_markdown_report(result: ScanResult, show_deps: bool = True) -> str:
                         if key in seen:
                             continue
                         seen.add(key)
-                        desc = v.description
+                        desc = sanitize_rule_description(v.description)
                         source_file = get_relative_source(v.matched_dependency.source, result.scan_target)
                         lines.append(
                             f"| {v.matched_dependency.artifact_id} | {v.matched_dependency.version} | "

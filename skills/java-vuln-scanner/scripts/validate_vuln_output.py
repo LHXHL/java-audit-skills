@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,8 +49,15 @@ FORBIDDEN = [
     "可利用",
     "漏洞利用成功",
     "最新修复版本",
+    "修复版本",
+    "整改版本",
     "安全版本",
     "升级到最新版本",
+    "建议升级",
+    "建议迁移",
+    "建议版本",
+    "建议升级版本",
+    "内置规则建议",
     "占位",
     "已合并到上表",
     "为避免章节结构歧义",
@@ -98,6 +107,42 @@ def table_count(text: str, label: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def run_deterministic_scan(scan_path: str) -> dict | None:
+    target = Path(scan_path)
+    if not target.exists():
+        return None
+    script = Path(__file__).resolve().parent / "scan_dependencies.py"
+    rules = Path(__file__).resolve().parent.parent / "references" / "java-vulnerability.yaml"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(target),
+            "--rules",
+            str(rules),
+            "--format",
+            "json",
+            "--no-save",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return json.loads(proc.stdout)
+
+
+def cves_from_scan(scan: dict) -> set[str]:
+    cves: set[str] = set()
+    for module in scan.get("modules", {}).values():
+        for vuln in module.get("vulnerabilities", []):
+            for value in [vuln.get("name", ""), vuln.get("description", "")]:
+                cves.update(re.findall(r"CVE-\d{4}-\d{4,7}", value))
+    return cves
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("output_dir", type=Path)
@@ -135,21 +180,51 @@ def main() -> int:
             errors.append(f"sections mismatch: {section_names(text)!r}")
         if "【填写】" in text or "TODO" in text:
             errors.append("placeholder remains")
-        if re.search(r"(~\s*\d+|约\s*\d+|大约\s*\d+|若干|多项)", text):
+        if re.search(r"(?<![A-Za-z0-9_-])~\s*\d+|(?:大约|约)\s*\d+|若干", text):
             errors.append("approximate statistics found")
         if re.search(r"(规则|rule)\s*#\s*\d+", text, flags=re.IGNORECASE):
             errors.append("internal rule number found")
         resolved = table_count(text, "已解析依赖")
         matched = table_count(text, "版本命中")
+        trigger_pending = table_count(text, "触发面待核查")
+        env_pending = table_count(text, "环境条件待确认")
+        unknown = table_count(text, "不可确认")
         unmatched = table_count(text, "未命中")
         if None not in (resolved, matched, unmatched) and resolved != matched + unmatched:
             errors.append(
                 f"dependency statistic mismatch: 已解析依赖 {resolved} != 版本命中 {matched} + 未命中 {unmatched}"
             )
+        if matched is not None:
+            for label, value in [
+                ("触发面待核查", trigger_pending),
+                ("环境条件待确认", env_pending),
+                ("不可确认", unknown),
+            ]:
+                if value is not None and value > matched:
+                    errors.append(f"status count mismatch: {label} {value} > 版本命中 {matched}")
         stats_body = section_body(text, "## 2. 依赖证据统计")
         version_hit_line = re.search(r"^\|\s*版本命中\s*\|.*$", stats_body, flags=re.MULTILINE)
-        if version_hit_line and re.search(r"(组件\+版本|独立治理项|去重后)", version_hit_line.group(0)):
+        if version_hit_line and re.search(r"(组件\+版本|独立治理项)", version_hit_line.group(0)):
             errors.append("version hit count uses unique component-version wording instead of dependency instances")
+        scan_path_match = re.search(r"^扫描路径:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+        if scan_path_match:
+            scan = run_deterministic_scan(scan_path_match.group(1))
+            if scan:
+                expected_counts = {
+                    "依赖总数": scan.get("total_dependencies"),
+                    "已解析依赖": scan.get("total_dependencies"),
+                    "版本命中": scan.get("matched_dependency_instances"),
+                    "未命中": scan.get("unmatched_dependency_instances"),
+                }
+                for label, expected in expected_counts.items():
+                    actual = table_count(text, label)
+                    if expected is not None and actual is not None and actual != expected:
+                        errors.append(f"script count mismatch: {label} {actual} != deterministic scan {expected}")
+                allowed_cves = cves_from_scan(scan)
+                reported_cves = set(re.findall(r"CVE-\d{4}-\d{4,7}", text))
+                extra_cves = sorted(reported_cves - allowed_cves)
+                if extra_cves:
+                    errors.append(f"report contains CVEs not emitted by deterministic scan: {extra_cves}")
         limits_body = section_body(text, "## 5. 未命中与限制说明")
         module_unmatched_counts = [int(n) for n in re.findall(r"[（(]\s*(\d+)\s*个\s*[）)]", limits_body)]
         if unmatched is not None and module_unmatched_counts and sum(module_unmatched_counts) != unmatched:
@@ -159,6 +234,8 @@ def main() -> int:
         for term in FORBIDDEN:
             if term.casefold() in folded:
                 errors.append(f"forbidden term found: {term}")
+        if re.search(r"(升级到|迁移到)\s*[A-Za-z0-9_.+-]+", text):
+            errors.append("upgrade or migration target version found")
         for marker in OLD_TEMPLATE_MARKERS:
             if marker in text:
                 errors.append(f"old template marker found: {marker}")
