@@ -1,524 +1,331 @@
-# Skills 详细说明
-
-## java-route-mapper
-
-**Java Web 源码路由与参数映射分析工具**
-
-适用场景：
-- 无 API 文档的项目进行接口梳理
-- 生成 Burp Suite 测试请求模板
-- 分析源码中的可访问端点
-
-**支持框架：**
-- Spring MVC / Spring Boot
-- Servlet（web.xml、@WebServlet）
-- JAX-RS（@Path、@GET、@POST 等）
-- Struts 2
-- CXF Web Services
-
-**核心功能：**
-1. 自动识别项目类型和框架
-2. 扫描并提取 HTTP 路由（@Controller、@RequestMapping 等）
-3. 解析参数结构（Path 变量、Query 参数、Body 参数、Header 参数、Cookie 参数）
-4. 支持 .class 和 .jar 文件的反编译分析
-5. 生成标准 HTTP 请求模板
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 完整的路由清单和 Burp Suite 请求模板
-
-=== [1] 用户登录 ===
-位置: UserController.login (src/main/java/com/example/controller/UserController.java:45)
-HTTP 方法: POST
-URL 路径: /api/auth/login
-参数结构:
-  Body: LoginRequest (username: String, password: String)
-
-Burp Suite 请求模板:
----
-POST /api/auth/login HTTP/1.1
-Host: {{host}}
-Content-Type: application/json
-
-{"username": "{{username}}", "password": "{{password}}"}
----
-```
-
----
-
-## java-route-tracer
-
-**Java Web 源码路由多层级调用链追踪工具**
-
-适用场景：
-- 追踪指定路由的完整调用链（Controller → Service → DAO）
-- 分析参数在调用链中的流向和变化
-- 识别参数是否到达敏感操作点（SQL/命令/HTTP/文件等）
-- 辅助其他审计技能进行漏洞判定
-
-**支持的漏洞类型：**
-- SQL 注入 - 追踪参数到 SQL 拼接点
-- 命令注入 - 追踪参数到 Runtime.exec()
-- SSRF - 追踪参数到 HTTP 请求
-- XSS - 追踪参数到响应输出
-- 文件操作 - 追踪参数到 File 操作
-- XXE/反序列化/LDAP 注入/表达式注入等
-
-**核心功能：**
-1. 接收路由路径，定位入口点
-2. 追踪从 Controller 到 DAO 层的完整调用链
-3. 记录参数在各层中的变量名变化
-4. 识别最终使用点类型（Sink）
-5. 分析参数的可控性（完全可控/条件可控/不可控）
-6. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 路由路径 + 项目路径
-输出: 完整调用链追踪报告
-
-=== 调用链追踪 ===
-[L1] ImageCaptureAction.getImageCapture()
-     ↓ page (含 orderBy, order), searchBean
-[L2] ImageCaptureManager.getImageCaptureJson()
-     ↓ page (含 orderBy, order), searchBean
-
-[L3] ImageCaptureDao.getImageCapturePage()
-     ↓ page (含 orderBy, order)
-[L4] AbstractDao.findSql()
-     └──→ sql = sql + " ORDER BY " + page.getOrderBy()
-
-=== 参数可控性分析 ===
-| 参数 | Sink类型 | 覆盖类型 | 可控性结论 |
-|-------|---------|---------|-----------|
-| page.orderBy | SQL ORDER BY | 无覆盖 | ✅ 完全可控 |
-| page.order | SQL ORDER BY | 无覆盖 | ✅ 完全可控 |
-```
-
----
-
-## java-sql-audit
-
-**Java Web 源码 SQL 注入漏洞审计工具**
-
-适用场景：
-- 识别 SQL 执行框架和实现方式
-- 发现 SQL 注入漏洞
-- 分析参数化查询使用情况
-- 审计动态 SQL 拼接逻辑
-
-**支持框架：**
-- JDBC
-- MyBatis
-- Hibernate
-
-**核心功能：**
-1. 识别所有 SQL 执行入口点
-2. 分析每个 SQL 操作的参数化情况
-3. 检测所有潜在的 SQL 注入模式
-4. 为每个风险点提供验证 PoC
-5. 分析执行条件（避免误报）
-6. 支持 .class 和 .jar 文件的反编译分析
-7. 结合 java-route-tracer 进行参数流向追踪
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: SQL 注入审计报告
-
-=== SQL 操作映射表 ===
-| 序号 | 类名 | 方法 | 框架 | 参数化状态 | 可利用性 |
-|------|------|------|------|------------|----------|
-| 1 | UserMapper | findById | MyBatis | ✅ 安全 | - |
-| 2 | UserMapper | findByName | MyBatis | ❌ 危险 | ⚠️ 待验证 |
-
-=== 高危风险详情 ===
-🔴 [SQL-001] ORDER BY 注入漏洞
-位置: AbstractDao.java:235
-框架: JDBC
-拼接代码: sql = sql + " ORDER BY " + page.getOrderBy()
-触发方式: page.orderBy 参数直接拼接
-建议修复: 使用白名单校验或参数化查询
-```
-
----
-
-## java-auth-audit
-
-**Java Web 源码鉴权机制审计工具**
-
-适用场景：
-- 识别项目中使用的鉴权框架和实现方式
-- 发现鉴权绕过漏洞
-- 分析越权访问风险
-- 审计权限校验逻辑
-
-**支持框架：**
-- Spring Security
-- Apache Shiro
-- JWT 鉴权
-- Session 鉴权
-- Filter/Interceptor 拦截器
-- 自定义鉴权实现
-
-**核心功能：**
-1. 自动识别鉴权框架类型和版本
-2. 提取鉴权配置和拦截规则
-3. 分析鉴权绕过模式（URL 解析绕过、权限校验绕过等）
-4. 识别越权访问风险（IDOR、水平/垂直越权）
-5. 检测框架版本已知漏洞
-6. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 鉴权机制分析报告、漏洞发现清单
-
-=== 鉴权框架识别 ===
-框架: Spring Security
-版本: 5.7.2
-
-=== 鉴权配置 ===
-SecurityFilterChain: /api/public/** = permitAll()
-SecurityFilterChain: /api/admin/** = hasRole('ADMIN')
-
-=== 潜在漏洞 ===
-[高危] URI 解析绕过漏洞
-  位置: SecurityConfig.java:45
-  说明: 使用 regexMatcher() 可能导致 /admin/. 接口绕过鉴权
-
-[高危] IDOR 越权漏洞
-  位置: UserController.getUserById (UserController.java:78)
-  说明: /api/user/{id} 接口缺少所有权校验，可能访问其他用户数据
-```
-
----
-
-## java-file-upload-audit
-
-**Java Web 源码文件上传漏洞审计工具**
-
-适用场景：
-- 识别文件上传入口和实现方式
-- 发现任意文件上传、路径穿越与可执行文件上传风险
-- 分析文件名/目录/类型/大小校验是否缺失或可绕过
-- 审计上传目录与访问控制
-
-**支持框架：**
-- Servlet Commons FileUpload
-- Spring Boot MultipartFile
-
-**核心功能：**
-1. 识别所有上传入口点（ServletFileUpload / MultipartFile）
-2. 分析每个上传点的保存路径、文件名来源与校验策略
-3. 检测所有潜在的上传风险模式（类型校验缺失、路径穿越、Web 根目录写入）
-4. 分析文件名/目录/类型/大小校验是否缺失或可绕过
-5. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 文件上传漏洞审计报告
-
-=== 上传点映射表 ===
-| 序号 | 类名 | 方法 | 上传实现 | 文件名来源 | 保存路径 | 校验状态 | 可利用性 |
-|------|------|------|----------|------------|----------|----------|----------|
-| 1 | UploadController | upload | MultipartFile | getOriginalFilename | /uploads/ | ❌ 无校验 | ✅ 已确认 |
-
-=== 高危风险详情 ===
-🔴 [C-UPLOAD-001] 任意文件上传漏洞
-位置: UploadController.java:45
-说明: 文件名直接来自用户输入，未做路径规范化处理
-风险: 可通过 ../ 实现路径穿越，写入任意位置
-```
-
----
-
-## java-file-read-audit
-
-**Java Web 源码任意文件读取漏洞审计工具**
-
-适用场景：
-- 识别文件读取操作和实现方式
-- 发现任意文件读取漏洞
-- 分析路径遍历攻击风险
-- 审计文件路径参数校验逻辑
-
-**支持方法：**
-- BufferedReader / FileReader / FileInputStream
-- Scanner
-- Files.lines / Files.readAllLines / Files.readAllBytes
-
-**核心功能：**
-1. 识别所有文件读取入口点
-2. 分析每个文件操作的路径来源
-3. 检测所有潜在的路径遍历模式
-4. 为每个风险点提供验证 PoC
-5. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 文件读取漏洞审计报告
-
-=== 文件操作映射表 ===
-| 序号 | 类名 | 方法 | 读取方法 | 路径来源 | 校验状态 | 可利用性 |
-|------|------|------|----------|----------|----------|----------|
-| 1 | FileController | download | FileInputStream | HTTP参数 | ❌ 无校验 | ✅ 已确认 |
-
-=== 高危风险详情 ===
-🔴 [C-FILE-001] 任意文件读取漏洞
-位置: FileController.java:45
-说明: filePath 参数直接传入 FileInputStream，未做路径校验
-风险: 可通过 ../ 路径遍历读取系统任意文件
-```
-
----
-
-## java-xxe-audit
-
-**Java Web 源码 XXE (XML External Entity) 漏洞审计工具**
-
-适用场景：
-- 识别 XML 解析器类型和实现方式
-- 发现 XXE 注入漏洞
-- 分析外部实体防护配置情况
-- 审计 XML 输入来源与回显逻辑
-
-**支持解析器：**
-- XMLReader
-- SAXBuilder (JDOM2)
-- SAXReader (dom4j)
-- SAXParserFactory
-- DocumentBuilderFactory
-
-**核心功能：**
-1. 识别所有 XML 解析入口点（5 种主流解析器）
-2. 分析每个解析器的外部实体防护配置
-3. 追踪 XML 输入来源（用户可控性）
-4. 检测回显点（数据是否返回给用户）
-5. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: XXE 漏洞审计报告
-
-=== XML 解析器映射表 ===
-| 序号 | 类名 | 方法 | 解析器类型 | 输入来源 | 安全配置 | 可利用性 |
-|------|------|------|-----------|----------|----------|----------|
-| 1 | XmlParser | parse | SAXReader | getInputStream | ❌ 未配置 | ✅ 可利用 |
-
-=== 高危风险详情 ===
-🔴 [C-XXE-001] XXE 注入漏洞
-位置: XmlParser.java:45
-说明: SAXReader 未禁用外部实体，用户可控 XML 直接解析
-风险: 可读取系统文件、SSRF、Blind XXE
-```
-
----
-
-## java-deserialization-audit
-
-**Java Web 源码反序列化漏洞审计工具**
-
-适用场景：
-- 审计 `DESERIALIZE` sink 是否可由用户输入触达
-- 分析 ObjectInputStream、XMLDecoder、Fastjson、XStream、JDBC、Shiro RememberMe、Log4j/JNDI 等反序列化风险
-- 结合组件版本、JDK 版本、gadget 条件判断可利用性
-- 输出安全验证思路、Burp 请求和 payload
-
-**支持类型：**
-- 原生 Java 反序列化：ObjectInputStream / readObject / readExternal
-- XMLDecoder
-- Fastjson
-- XStream
-- JDBC URL / DataSource 反序列化与 JNDI 类风险
-- Shiro RememberMe
-- Log4j/JNDI
-- CommonsCollections / ysoserial gadget 链
-
-**核心功能：**
-1. 优先读取 route_mapper、route_tracer、vuln_report、cross_analysis 的前序输出
-2. 根据 `DESERIALIZE` sink 或反序列化组件命中按需审计
-3. 分析入口可达性、用户可控性、组件/JDK/gadget 条件和分支条件
-4. 为风险点提供 Burp 请求、payload 和修复建议
-5. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 反序列化漏洞审计报告
-
-=== 反序列化 Sink 映射表 ===
-| 序号 | 类名 | 方法 | Sink 类型 | 输入来源 | 组件/版本条件 | 可控性 | 可利用性 |
-|------|------|------|-----------|----------|---------------|--------|----------|
-| 1 | ImportController | importConfig | XMLDecoder | HTTP Body | JDK 内置 | ✅ 完全可控 | ✅ 已确认 |
-
-=== 高危风险详情 ===
-🔴 [C-DESER-001] XMLDecoder 反序列化漏洞
-位置: ImportController.java:45
-说明: 用户可控 XML 直接进入 XMLDecoder.readObject()
-验证: 使用低破坏命令或 DNS OOB payload 确认触发
-```
-
----
-
-## java-vuln-scanner
-
-**Java 组件版本漏洞检测工具**
-
-适用场景：
-- Java 项目依赖安全审计
-- 识别 Log4j、Fastjson、Shiro、Spring 等高危组件漏洞
-- jar 包反编译后的依赖分析
-
-**支持输入：**
-- pom.xml - Maven 项目
-- build.gradle - Gradle 项目
-- .jar 文件 - 从文件名或 META-INF 提取依赖信息
-- 目录 - 递归扫描，自动按模块分组
-
-**漏洞规则覆盖（130+ CVE）：**
-
-| 组件类别 | 主要漏洞 |
-|---------|---------|
-| Log4j | CVE-2021-44228 (Log4Shell), CVE-2021-45046 |
-| Fastjson | CVE-2022-25845, CVE-2017-18349 |
-| Spring | CVE-2022-22965 (Spring4Shell), CVE-2022-22963 |
-| Struts2 | S2-045, S2-046, S2-057, S2-061 |
-| Shiro | CVE-2016-4437, CVE-2020-11989, CVE-2020-17510 |
-| Jackson | CVE-2020-36518, CVE-2019-12384 |
-| XStream | CVE-2021-39144 等 15 个 CVE |
-| ActiveMQ | CVE-2023-46604 |
-
-**核心功能：**
-1. 扫描项目依赖，匹配已知 CVE 规则
-2. 按模块分组输出，按严重级别分类
-3. AI 自动生成漏洞触发点分析
-4. 支持 .class 和 .jar 文件的反编译分析
-
-**使用示例：**
-
-```
-输入: 项目源码路径
-输出: 漏洞扫描报告
-
-📊 扫描摘要:
-   模块数量: 4
-   依赖总数: 262
-   漏洞总数: 80
-   🔴 严重: 24
-
-=== 漏洞详情 ===
-🔴 Critical - log4j-core 2.14.1
-   CVE-2021-44228 (Log4Shell)
-   影响: 远程代码执行
-   修复版本: >= 2.17.1
-```
-
----
-
-## java-audit-pipeline
-
-**Java Web 全链路自动化安全审计流水线**
-
-> **前置条件（Agent Teams）：**
-> - Claude Code 版本 >= 2.1.32
-> - 在 `~/.claude/settings.json` 的 `env` 中添加 `"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"`：
->   ```json
->   {
->     "env": {
->       "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
->     }
->   }
->   ```
-> - 也可通过环境变量临时启用：`export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
-> - （可选）安装 tmux 以获得分屏可视化效果，使用 `Shift+Up/Down` 切换 teammate 视图
->
-> 注：Agent Teams 为 research preview 实验性功能，随 Opus 4.6（2026-02-05）发布。
-
-适用场景：
-- 一键启动 Java 项目全量安全审计
-- 自动识别无鉴权高危路由并精准分析漏洞
-- 基于调用链的精准漏洞审计（减少误报）
-- 自动校验每个 skill 输出质量
-
-**核心功能：**
-1. 使用 agent team 编排多个 agent（含动态扩展的调用链追踪 worker），分 5 个阶段自动完成完整安全审计
-2. 阶段1：信息收集（路由分析 + 鉴权审计 + 组件漏洞扫描，并行执行）
-3. 阶段2：交叉分析（风险分级 + 漏洞汇总，并行执行）
-4. 阶段3：调用链追踪（分批并行追踪高危路由参数流向，含鉴权风险透传）
-5. 阶段4：漏洞深度分析（根据 sink 类型选择对应审计 skill，含可利用前置条件，按需并行）
-6. 阶段5：质量校验（每阶段完成后立即校验，不合格则重做，通过后关闭 agent 释放资源）
-
-**流程总览：**
-
-```
-阶段1: 信息收集（并行）
-  ├─ agent-1-route-mapper: /java-route-mapper   → 全量路由+参数  → agent-7 校验 → 通过后关闭
-  ├─ agent-2-auth-audit: /java-auth-audit     → 路由鉴权映射    → agent-7 校验 → 通过后关闭
-  └─ agent-3-vuln-scanner: /java-vuln-scanner   → 组件漏洞        → agent-7 校验 → 通过后关闭
-        ↓ 三个校验全部通过后
-阶段2: 交叉分析（并行）
-  ├─ agent-4a-risk-classifier: 路由分级（P0/P1/P2） → agent-7 校验 → 通过后关闭
-  └─ agent-4b-vuln-aggregator: 漏洞汇总（组件漏洞+鉴权绕过） → agent-7 校验 → 通过后关闭
-        ↓ 两个校验全部通过后
-阶段3: 调用链追踪（分批并行）
-  ├─ agent-5-route-tracer: 读取 P0+P1 全部高危路由（P0+P1=0 时启用 P2 兜底），分批创建追踪任务 → 通过后关闭
-  └─ agent-5-1/5-2/.../5-N: /java-route-tracer 并行追踪各批次路由（含鉴权风险透传） → agent-7 校验 → 通过后关闭
-        ↓
-阶段4: 漏洞深度分析（按需并行）
-  ├─ agent-6a-sql-auditor: /java-sql-audit         → SQL注入分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-  ├─ agent-6b-xxe-auditor: /java-xxe-audit         → XXE注入分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-  ├─ agent-6c-upload-auditor: /java-file-upload-audit  → 文件上传分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-  ├─ agent-6d-fileread-auditor: /java-file-read-audit   → 文件读取分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-  └─ agent-6e-deserialization-auditor: /java-deserialization-audit → 反序列化分析（含可利用前置条件） → agent-7 校验 → 通过后关闭
-        ↓
-阶段5: 汇总报告
-  └─ agent-7-quality-checker: 整合所有校验结果，生成最终 quality_report.md → 完成后关闭
-```
-
-**使用示例：**
-
-```
-/java-audit-pipeline /path/to/project
-
-输入: 源码目录路径 + 输出目录路径（可选，默认 {source_path}_audit）
-输出: 完整审计报告目录，包含所有阶段结果和质量检查报告
-```
-
----
-
-## 输出目录结构
-
-所有技能的输出统一到 `{项目名}_audit/` 目录下：
-
-```
+# Skills 说明
+
+本目录保存 Java Audit Skills 的正式 skill 集合。新版结构强调“按职责加载、按证据交接、按专项下结论”：每个 `SKILL.md` 只负责说明何时触发、何时不触发、成功标准、工作流、强制规则和 eval；大段规则、模板、payload 注意事项和框架细节放在对应 `references/` 中按需读取。
+
+## 总体原则
+
+- `description` 写加载时机，不写宣传式功能介绍。
+- `java-route-mapper` 产出入口面；`java-route-tracer` 产出调用链证据；专项漏洞 skill 才能做漏洞判定。
+- `java-vuln-scanner` 只输出组件版本证据，不直接证明业务风险成立。
+- `java-audit-pipeline` 只编排真实多 agent 流水线和 QA 门禁，不顺序模拟完整 team。
+- 漏洞类 skill 必须区分 `确认漏洞`、`条件成立`、`待验证`、`不可确认`、`非漏洞`。
+- 只有 `确认漏洞` 和 `条件成立` 项输出 Burp Suite 请求和低破坏 payload；其他状态只写证据缺口和补证方向。
+- 所有数量、文件数、路由数、命中数都必须可复核；无法精确统计时写 `不可确认` 或 `未精确统计`。
+- 正式报告不得包含输出自检、技能源校验、测试提示词、模型运行状态、内部规则编号、validator 过程或工具审批信息。
+
+## 技能地图
+
+| Skill | 分层 | 主要输入 | 主要输出 |
+|---|---|---|---|
+| `java-route-mapper` | 入口面数据底座 | Java Web 源码、WAR/class/JAR、框架配置 | 路由、HTTP 方法、入口方法、参数结构、WebService/SOAP operation |
+| `java-route-tracer` | 调用链证据层 | 已知路由、入口方法、route mapper 批次 | 参数流向、变量变化、分支条件、sink 和可控性 |
+| `java-auth-audit` | 认证授权专项 | 路由清单、鉴权配置、Filter/Interceptor、注解、业务权限代码 | 鉴权状态映射、确认/条件成立的认证授权风险、README 限制说明 |
+| `java-sql-audit` | SQL 注入专项 | SQL/HQL/JPQL/native SQL sink、Mapper、调用链证据 | SQL 操作映射、注入结论、验证材料 |
+| `java-file-upload-audit` | 文件上传专项 | 上传入口、文件名/目录/内容流向、写入 sink | 上传点映射、上传风险结论、验证材料 |
+| `java-file-read-audit` | 文件读取专项 | 下载/读取入口、路径参数、FILE sink | 文件读取映射、路径遍历结论、验证材料 |
+| `java-xxe-audit` | XML/XXE 专项 | XML/SOAP 输入、解析器、factory/resolver 配置 | XML 解析器映射、XXE 结论、验证材料 |
+| `java-deserialization-audit` | 反序列化专项 | DESERIALIZE sink、组件命中、gadget/JDK 条件 | 反序列化 sink 映射、可利用性结论、验证材料 |
+| `java-vuln-scanner` | 组件版本证据层 | pom.xml、build.gradle、WEB-INF/lib、JAR/WAR | 依赖版本证据、本地规则命中、触发面交接方向 |
+| `java-audit-pipeline` | 编排与质检层 | source_path、output_path、真实 team 能力 | 阶段产物、QA 报告、quality_report 或 pipeline_blocked |
+
+## 推荐流转
+
+### 单项审计
+
+1. 入口不清楚时，先运行 `java-route-mapper`。
+2. 需要证明请求参数是否到达 sink 时，运行 `java-route-tracer`。
+3. 根据 sink 类型进入专项 skill：SQL、XXE、上传、文件读取、反序列化或鉴权。
+4. 依赖版本问题单独交给 `java-vuln-scanner`；命中后再按触发面交给专项 skill。
+
+### 完整审计
+
+1. `java-audit-pipeline` 初始化输出目录、配置和阶段计划。
+2. 阶段 1 并行产出 `route_mapper/`、`auth_audit/`、`vuln_report/`。
+3. 阶段 2 做路由风险分级和组件/鉴权发现聚合。
+4. 阶段 3 基于高风险路由分批运行 `java-route-tracer`。
+5. 阶段 4 只对命中的 sink 启动对应专项 worker；无 sink 的目录写 `SKIPPED.md`。
+6. 阶段 5 由独立 QA 汇总 `quality_report.md`。
+
+如果没有真实 team / 多 agent 调度能力，pipeline 必须生成 `pipeline_blocked.md`，不能用单进程顺序跑出的报告冒充完整流水线。
+
+## 各 Skill 边界
+
+### java-route-mapper
+
+定位：Java Web 入口面数据底座，只回答“有哪些可访问入口、入口在哪里、请求参数从哪里来”。
+
+使用场景：
+
+- 提取 Spring MVC、Servlet、JAX-RS、Struts2、CXF/JAX-WS/Axis 等入口。
+- 生成 route mapper 输出供鉴权、调用链、漏洞专项或 pipeline 使用。
+- 大型项目按模块、namespace、worker 范围拆分路由提取。
+
+不使用场景：
+
+- 判断漏洞、鉴权是否正确、组件 CVE 或完整调用链。
+- 已有完整路由清单，只做 OpenAPI/Postman/人类文档转换。
+- 非 Web Java 程序且没有 HTTP/WebService 入口。
+
+交付重点：
+
+- 完整 URL、HTTP 方法、入口类/方法、源码或反编译位置。
+- Path、Query/Form、Body、Header、Cookie、File、SOAP 参数结构。
+- WebService endpoint 地址必须来自真实配置，不用类名或 bean id 猜测。
+- 通配符、dispatch 网关、Struts 动态 action 要展开真实可达实例。
+
+### java-route-tracer
+
+定位：调用链证据层，从已知入口追踪参数到 sink，不直接下漏洞结论。
+
+使用场景：
+
+- 追踪指定路由、入口方法或 pipeline 批次中的参数流向。
+- 判断参数是否到达 SQL、FILE、XML、COMMAND、HTTP、LDAP、EXPRESSION、DESERIALIZE、RESPONSE 等 sink。
+- 为 SQL/XXE/上传/文件读取/反序列化专项准备可控性和分支证据。
+
+不使用场景：
+
+- 只提取全量路由。
+- 直接判断 SQL、XXE、上传、文件读取、反序列化或鉴权漏洞。
+- 没有明确路由、入口方法、route mapper 输出或可定位范围时做全项目“所有调用链”。
+
+交付重点：
+
+- 入口证据、HTTP 请求模板、参数结构和调用层级。
+- 变量改名、DTO/Map 字段、覆盖、校验、白名单、提前返回和异常路径。
+- sink 类型、代码位置、分支条件和可控性结论。
+- 上游鉴权状态只透传，不自行鉴权。
+
+### java-auth-audit
+
+定位：认证授权专项，判断入口是否被正确认证、授权是否可绕过、对象访问是否越权。
+
+使用场景：
+
+- 审计未授权访问、认证绕过、权限提升、IDOR、水平/垂直越权。
+- 分析 Shiro、Spring Security、JWT、Session、Filter、Interceptor、方法注解或自定义权限逻辑。
+- 基于 route mapper 输出生成路由鉴权映射。
+
+不使用场景：
+
+- 只提取路由、依赖 CVE、SQL/XXE/上传/文件读取/反序列化。
+- Cookie 属性、session timeout、CSRF/CORS、密码策略等通用加固项，除非直接导致认证或授权绕过。
+
+交付重点：
+
+- 完整鉴权链路：网关、Filter、Interceptor、框架配置、方法注解、业务权限、对象归属校验。
+- 三文件输出：主报告、鉴权映射、README。
+- `确认漏洞` 和 `条件成立` 必须有真实入口、证据链、Burp 请求、角色/对象变体和限制说明。
+
+### java-sql-audit
+
+定位：SQL 注入专项判定层。
+
+使用场景：
+
+- 审计 JDBC、MyBatis、Hibernate、JPA、Mapper XML、动态 SQL、ORDER BY、动态表名/列名。
+- route-tracer 已报告 SQL/HQL/JPQL/native SQL sink，需要做专项结论。
+- 字节码或部署包中存在 DAO、Repository、Mapper、SqlProvider 候选，需要按需反编译。
+
+不使用场景：
+
+- 只梳理路由、只追踪调用链、只做鉴权或组件版本扫描。
+- 只有 DAO/Mapper 方法名但没有真实实现、Mapper XML、SQL API 调用或反编译结果。
+- 用户要求未授权攻击、批量数据抽取、DNS/OOB、命令执行或破坏性验证。
+
+交付重点：
+
+- 入口、可控参数、数据流、真实 SQL sink、防护状态和代码位置。
+- 参数绑定、白名单、类型转换、数据库/环境分支和执行条件。
+- 严格使用 6 个编号章节；确认/条件成立项输出 Burp 请求和 payload。
+
+### java-file-upload-audit
+
+定位：文件上传专项判定层。
+
+使用场景：
+
+- 审计 MultipartFile、Part、Commons FileUpload、FileItem、Base64/JSON 上传。
+- 判断文件名、目录、内容、保存路径、校验顺序、Web 可访问性和覆盖策略。
+- route-tracer 已证明上传参数到达文件写入 sink。
+
+不使用场景：
+
+- 文件下载或任意文件读取。
+- 普通服务端导出、模板生成、缓存落盘，且没有外部上传内容/文件名/目录输入。
+- 生成可执行后门样本、持久化内容、横向移动或批量验证脚本。
+
+交付重点：
+
+- 入口、文件内容来源、文件名来源、保存目录、写入 sink、校验逻辑和执行条件。
+- 文件名净化、路径规范化、目录限制、扩展名、Content-Type、魔数、大小限制、随机重命名。
+- 验证 payload 使用无害 marker，不输出可执行后门内容。
+
+### java-file-read-audit
+
+定位：任意文件读取和路径遍历专项判定层。
+
+使用场景：
+
+- 审计文件下载、预览、资源读取、模板读取、FileInputStream、FileReader、Files.read*、response 输出链路。
+- 判断外部输入是否影响文件名、路径、资源 key、下载 ID 或数据库路径字段。
+- route-tracer 已报告 FILE sink，需要做专项结论。
+
+不使用场景：
+
+- 文件上传、任意文件写入或 WebShell 上传。
+- SQL、XXE、反序列化、鉴权、SSRF、命令执行或组件 CVE。
+- 路径完全由服务端常量、闭合 ID 映射或不可控配置决定。
+
+交付重点：
+
+- 真实读取/下载/资源 sink、路径可控性、防护状态和代码位置。
+- canonical/normalize、基础目录、ID 映射、白名单、扩展名、URL 解码和路径分隔符处理。
+- 不输出真实敏感文件内容、生产路径或批量读取 payload。
+
+### java-xxe-audit
+
+定位：XML 外部实体和 XML 解析安全配置专项判定层。
+
+使用场景：
+
+- 审计 JAXP、JDOM、dom4j、StAX、JAXB、Transformer、Schema、XStream XML 解析风险。
+- 分析 SOAP/XML 请求体、Content-Type、parser/factory/resolver 安全配置。
+- route-tracer 已报告用户输入到达 XML 解析器或 XML 工具类。
+
+不使用场景：
+
+- 只看到 XML 文件、Spring bean、SOAP 配置或 `@WebService`，但没有解析 API 或外部实体处理证据。
+- XStream/JAXB 的对象反序列化 gadget 风险，应交给 `java-deserialization-audit`。
+- 组件版本 CVE 扫描。
+
+交付重点：
+
+- 用户可控 XML、真实解析 sink、防护配置、入口地址和输出条件。
+- WebService endpoint 必须来自 CXF/JAX-WS 配置、WSDL、注解或 route mapper 证据。
+- payload 只使用授权测试环境的受控 canary 或无敏感测试文件占位符。
+
+### java-deserialization-audit
+
+定位：反序列化漏洞深度审计。
+
+使用场景：
+
+- 分析 DESERIALIZE sink、ObjectInputStream/readObject、XMLDecoder、Fastjson、XStream、JDBC、Shiro RememberMe、Log4j/JNDI。
+- 判断 gadget 链、JDK/组件版本、classpath、过滤器、白名单/黑名单和出网条件。
+- pipeline 阶段 4 中 route-tracer 或 vuln-scanner 给出反序列化相关证据。
+
+不使用场景：
+
+- 只查依赖版本或 CVE。
+- 只审计普通 XXE、SQL 注入、路由提取或调用链证据。
+- 只有 gadget 依赖，没有入口、自动触发点和危险原语。
+
+交付重点：
+
+- sink、入口可达性、用户可控性、分支条件、组件/JDK/gadget 条件。
+- 组件版本命中只能作为输入证据，不能直接判定漏洞成立。
+- payload 必须遵守授权测试语境，不生成删除文件、持久化、横向移动或批量利用内容。
+
+### java-vuln-scanner
+
+定位：组件版本证据层。
+
+使用场景：
+
+- 扫描 Maven、Gradle、JAR、WAR、WEB-INF/lib 中的依赖版本。
+- 用本地 `java-vulnerability.yaml` 规则库匹配 CVE/组件风险。
+- pipeline 需要组件版本命中清单，作为后续专项审计输入。
+
+不使用场景：
+
+- 证明某个业务风险真实成立。
+- 输出可复制验证请求、攻击字符串、payload、CVSS、具体修复版本或维护版本承诺。
+- 用户需要最新官方安全公告或实时 CVE 状态。
+
+交付重点：
+
+- 必须运行 `scripts/scan_dependencies.py` 获取 JSON 结果。
+- 正式报告的组件、版本、规则/CVE 只能来自脚本 JSON。
+- 状态只使用 `版本命中`、`触发面待核查`、`环境条件待确认`、`不可确认`、`未命中`。
+- 对每个命中项说明需交给哪个专项 skill 继续确认触发面。
+
+### java-audit-pipeline
+
+定位：Claude team / 多 agent 编排 skill，不是漏洞检测 skill。
+
+使用场景：
+
+- 用户要求一键审计、完整安全审计流水线、Java 全链路审计。
+- 用户明确要求多 agent、质检员、阶段门禁、返工或并行编排。
+- 需要统一调度 route mapper、auth、vuln scanner、route tracer 和专项 worker。
+
+不使用场景：
+
+- 只需要单一 skill、单条调用链、依赖扫描或普通报告润色。
+- 当前环境实际不能创建、等待、质检或关闭独立 agent；此时写阻塞报告，不顺序模拟。
+
+交付重点：
+
+- 初始化 `pipeline_plan.md`、`scripts/pipeline_config.json`、`team_execution.md`、`tmp/`、`decompiled/cache/`。
+- 每个 worker 完成后由独立 `agent-7-x` 质检员校验；阶段门禁通过后才能进入下游。
+- 产出 `qa_reports/`、`quality_report.md` 或 `pipeline_blocked.md`。
+- 漏洞规则、模板、Burp 请求、payload 和结论均由对应子 skill 负责。
+
+## 输出目录
+
+统一输出目录建议为 `{project_name}_audit/`：
+
+```text
 {project_name}_audit/
-├── route_mapper/              # java-route-mapper 输出（含按模块划分的子目录，主索引在根目录）
-├── route_tracer/              # java-route-tracer 输出
-├── sql_audit/                 # java-sql-audit 输出
-├── auth_audit/                # java-auth-audit 输出
-├── file_upload_audit/         # java-file-upload-audit 输出
-├── file_read_audit/           # java-file-read-audit 输出
-├── xxe_audit/                 # java-xxe-audit 输出
-├── deserialization_audit/     # java-deserialization-audit 输出
-├── vuln_report/               # java-vuln-scanner 输出
-├── cross_analysis/            # java-audit-pipeline 交叉分析结果
-│   ├── high_risk_routes.md              # agent-4a 输出
-│   ├── trace_batch_plan.md              # agent-5 分批方案
-│   ├── component_vulnerabilities.md     # agent-4b 输出
-│   └── auth_bypass_vulnerabilities.md   # agent-4b 输出
-├── decompiled/                # 反编译输出（多 agent 共享）
-└── quality_report.md          # java-audit-pipeline 质量检查报告
+├── route_mapper/
+├── auth_audit/
+├── vuln_report/
+├── cross_analysis/
+│   ├── high_risk_routes.md
+│   ├── trace_batch_plan.md
+│   ├── component_vulnerabilities.md
+│   └── auth_bypass_vulnerabilities.md
+├── route_tracer/
+├── sql_audit/
+├── xxe_audit/
+├── file_upload_audit/
+├── file_read_audit/
+├── deserialization_audit/
+├── qa_reports/
+├── decompiled/
+├── quality_report.md
+└── pipeline_blocked.md
 ```
+
+单项 skill 可以只生成自己的子目录；pipeline 需要保留完整目录结构。无 sink 的专项目录写 `SKIPPED.md`，用于区分“已判断不触发”和“漏跑”。
+
+## References 与脚本
+
+- 大段规则、模板、payload 注意事项和框架细节放在各 skill 的 `references/` 中。
+- 共享反编译策略和通用输出规范放在 `java-shared/` 中。
+- 运行期脚本保留在对应 skill 的 `scripts/` 下，例如 `java-vuln-scanner/scripts/scan_dependencies.py`。
+- 维护/回归检查脚本放在 `tools/skill-maintenance/validators/`，仅用于本地验收辅助。
+
+常用维护检查：
+
+```bash
+python3 -m py_compile tools/skill-maintenance/validators/*.py
+python3 tools/skill-maintenance/validators/validate_vuln_output.py <输出目录>
+python3 tools/skill-maintenance/validators/validate_auth_output.py <输出目录>
+python3 tools/skill-maintenance/validators/validate_sql_output.py <输出目录>
+python3 tools/skill-maintenance/validators/validate_file_read_output.py <输出目录>
+python3 tools/skill-maintenance/validators/validate_route_tracer_output.py <输出目录>
+python3 tools/skill-maintenance/validators/validate_pipeline_output.py <输出目录>
+```
+
+validator 不能替代人工审计判断，也不能把“validator 通过”写入正式报告或最终用户回复。
+
+## 编写和修改 Skill 的约束
+
+- 新增或重写内容默认使用中文；类名、方法名、配置键、CVE、命令和路径保持原文。
+- `SKILL.md` 不堆长篇漏洞背景、工具教程或完整模板。
+- reference 职责混杂时应拆分或重命名。
+- 模板不得诱导模型编造 CVE、CVSS、修复版本、PoC、利用链或不可验证结论。
+- 组件版本证据类 skill 不输出 Burp、payload、PoC、CVSS、具体修复版本或确认性漏洞结论。
+- 漏洞类 skill 的确认项必须给出可交付给开发单位的验证材料；待验证、不可确认和非漏洞项不得补写验证材料。
