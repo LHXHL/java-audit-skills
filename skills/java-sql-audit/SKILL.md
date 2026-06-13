@@ -121,7 +121,7 @@ description: 当用户要求审计 Java 源码中的 SQL 注入、动态 SQL 拼
 - 对没有确认漏洞的审计，也要输出已检查的 SQL 操作、非漏洞依据、待验证项和限制。
 - 确认漏洞或条件成立项按 `references/VALIDATION_GUIDE.md` 输出 Burp Suite 请求和 payload；其他状态只写补证路径。
 - 非 SQL sink 的过滤器启用状态、配置观察、依赖版本信息不要写入 `SQL 操作映射`，避免统计口径漂移。
-- 生成报告后可运行 `scripts/validate_sql_output.py <输出目录>` 检查章节、统计一致性、省略号和 payload 边界；检查脚本不能替代人工证据判断，也不能写入正式报告或最终对话回复。
+- 生成报告后可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_sql_output.py <输出目录>` 检查章节、统计一致性、省略号和 payload 边界；检查脚本不能替代人工证据判断，也不能写入正式报告或最终对话回复。
 
 ## Hard Rules
 

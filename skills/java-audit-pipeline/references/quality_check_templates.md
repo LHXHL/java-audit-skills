@@ -82,7 +82,7 @@ QA 报告措辞要求：
 | 6 | 组件扫描边界 | 不含验证包、评分、具体版本建议、具体升级目标、修补历史、版本范围、确认性漏洞结论 |
 | 7 | 数字精确性 | 所有 Markdown 产物不得使用估算词、尾随加号或范围写法代替精确数字；无法精确统计时写“不可确认”并说明缺失证据 |
 | 8 | 阶段隔离 | 三类输出目录互不覆盖，无旧轮次报告混入 |
-| 9 | 组件报告校验 | `vuln_report/` 必须通过 `java-vuln-scanner/scripts/validate_vuln_output.py`；脚本未输出的 CVE/规则不得出现在报告中 |
+| 9 | 组件报告校验 | `vuln_report/` 必须通过 `tools/skill-maintenance/validators/validate_vuln_output.py`；脚本未输出的 CVE/规则不得出现在报告中 |
 | 10 | 阶段2前置门禁 | 进入 `cross_analysis/` 前，必须存在 route worker QA、`qa_report_agent-1-merge.md`、`qa_report_agent-2-auth-audit.md`、`qa_report_agent-3-vuln-scanner.md`，且均通过 |
 
 阶段 QA 报告的“预期/实际”列不得原样引用带 `{...}` 的模板变量。需要说明命名格式时，写“项目名 + `_vuln_scan_` + 时间戳”或直接写真实文件名。

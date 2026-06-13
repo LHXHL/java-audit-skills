@@ -111,8 +111,10 @@ def run_deterministic_scan(scan_path: str) -> dict | None:
     target = Path(scan_path)
     if not target.exists():
         return None
-    script = Path(__file__).resolve().parent / "scan_dependencies.py"
-    rules = Path(__file__).resolve().parent.parent / "references" / "java-vulnerability.yaml"
+    repo_root = Path(__file__).resolve().parents[3]
+    skill_dir = repo_root / "skills" / "java-vuln-scanner"
+    script = skill_dir / "scripts" / "scan_dependencies.py"
+    rules = skill_dir / "references" / "java-vulnerability.yaml"
     proc = subprocess.run(
         [
             sys.executable,

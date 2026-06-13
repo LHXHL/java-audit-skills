@@ -87,7 +87,7 @@ description: 当用户要求审计 Java 源码、字节码或 pipeline 证据中
 5. 判断防护：检查基础目录、规范化、白名单、ID 映射、扩展名校验、黑名单替换、URL 解码和路径分隔符处理。
 6. 需要深度调用链时切换到 `java-route-tracer`；没有入口或调用链证据时只能输出待验证/不可确认。
 7. 生成报告：确认/条件成立项按 `VALIDATION_MATERIALS.md` 输出 Burp Suite 请求和 payload；其他状态只写补证路径。
-8. 输出后可运行 `scripts/validate_file_read_output.py <输出目录>` 做硬边界检查，再人工检查证据链。
+8. 输出后可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_file_read_output.py <输出目录>` 做硬边界检查，再人工检查证据链。
 
 ## Hard Rules
 

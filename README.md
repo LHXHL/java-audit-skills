@@ -42,19 +42,20 @@
 ```
 java-audit-skills/
 ├── README.md                    # 项目说明文档
-└── skills/                      # Skills 集合目录
-    ├── README.md               # Skills 详细说明
-    ├── shared/                 # 共享工具和资源
-    ├── java-route-mapper/      # Java 路由与参数映射工具
-    ├── java-route-tracer/      # Java 路由调用链追踪工具
-    ├── java-sql-audit/         # Java SQL 注入审计工具
-    ├── java-auth-audit/        # Java 鉴权机制审计工具
-    ├── java-file-upload-audit/ # Java 文件上传漏洞审计工具
-    ├── java-file-read-audit/   # Java 文件读取漏洞审计工具
-    ├── java-xxe-audit/        # Java XXE 漏洞审计工具
-    ├── java-deserialization-audit/ # Java 反序列化漏洞审计工具
-    ├── java-vuln-scanner/     # Java 组件版本漏洞检测工具
-    └── java-audit-pipeline/   # Java 全链路自动化安全审计流水线
+├── skills/                      # Skills 集合目录
+│   ├── README.md               # Skills 详细说明
+│   ├── java-shared/            # 共享审计规则和参考资料
+│   ├── java-route-mapper/      # Java 路由与参数映射工具
+│   ├── java-route-tracer/      # Java 路由调用链追踪工具
+│   ├── java-sql-audit/         # Java SQL 注入审计工具
+│   ├── java-auth-audit/        # Java 鉴权机制审计工具
+│   ├── java-file-upload-audit/ # Java 文件上传漏洞审计工具
+│   ├── java-file-read-audit/   # Java 文件读取漏洞审计工具
+│   ├── java-xxe-audit/         # Java XXE 漏洞审计工具
+│   ├── java-deserialization-audit/ # Java 反序列化漏洞审计工具
+│   ├── java-vuln-scanner/      # Java 组件版本漏洞检测工具
+│   └── java-audit-pipeline/    # Java 全链路自动化安全审计流水线
+└── tools/skill-maintenance/     # Skill 维护文档和输出质检脚本
 ```
 
 ## 可用 Skills

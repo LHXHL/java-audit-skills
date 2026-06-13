@@ -339,8 +339,7 @@ def check_vuln_report_with_skill_validator(output_dir: Path, errors: list[str]) 
     blocked = output_dir / "pipeline_blocked.md"
     if blocked.exists() and not any(vuln_dir.rglob("*.md")):
         return
-    skills_dir = Path(__file__).resolve().parent.parent.parent
-    validator = skills_dir / "java-vuln-scanner" / "scripts" / "validate_vuln_output.py"
+    validator = Path(__file__).resolve().parent / "validate_vuln_output.py"
     if not validator.exists():
         add_error(errors, vuln_dir, "java-vuln-scanner validator is missing")
         return

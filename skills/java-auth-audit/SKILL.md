@@ -55,7 +55,7 @@ description: 当用户要求审计 Java Web 认证、授权、路由鉴权覆盖
 4. 建立路由鉴权映射：公开、受保护、仅认证、无鉴权、待验证、不可确认、非漏洞。
 5. 只对完整证据链风险写主报告；证据缺口写映射表/README，不写 Burp 请求。
 6. 确认/条件成立项读取 `references/VALIDATION_MATERIALS.md`，生成 Burp Suite 请求和 payload/角色/对象变体。
-7. 生成三文件后，可运行 `scripts/validate_auth_output.py <输出目录>` 做硬边界检查，再人工检查风险证据。
+7. 生成三文件后，可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_auth_output.py <输出目录>` 做硬边界检查，再人工检查风险证据。
 
 ## 按需读取的 references
 

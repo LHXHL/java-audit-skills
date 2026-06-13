@@ -115,7 +115,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 5. 标记 sink 类型与位置。sink 类型和可控性判定按 `references/CONTROLLABILITY_ANALYSIS.md`。
 6. 分析参数覆盖、校验、白名单、黑名单、规范化、提前返回和异常路径。
 7. 分支条件按 `references/BRANCH_TRACING.md` 输出到报告。
-8. 按模板写入报告和索引文件；可运行 `scripts/validate_route_tracer_output.py <输出目录>` 做格式和边界检查，检查结果只用于内部修正，不写入报告。
+8. 按模板写入报告和索引文件；可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_route_tracer_output.py <输出目录>` 做格式和边界检查，检查结果只用于内部修正，不写入报告。
 
 ## 按需读取的 references
 
@@ -125,7 +125,7 @@ description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline
 - 完整报告模板：`references/OUTPUT_TEMPLATE_FULL.md`
 - 简化报告模板：`references/OUTPUT_TEMPLATE_SIMPLE.md`
 - 多方法索引模板：`references/OUTPUT_TEMPLATE_INDEX.md`
-- 输出边界检查：`scripts/validate_route_tracer_output.py`
+- 输出边界检查：`tools/skill-maintenance/validators/validate_route_tracer_output.py`
 - 需要反编译：`../java-shared/DECOMPILE_STRATEGY.md`
 
 ## 强制规则

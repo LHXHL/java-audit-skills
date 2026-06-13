@@ -81,7 +81,7 @@ description: 当用户要求审计 Java 项目的第三方依赖、pom.xml/build
 4. 去重和归并：同一组件、同一版本、同一 CVE/规则在多个模块出现时按模块列证据，按根因聚合说明。
 5. 做触发面初筛：只读取必要配置和入口证据，判断是否需要交给专项 skill；不要在本 skill 内补写漏洞利用链。
 6. 生成报告：按 `OUTPUT_TEMPLATE.md` 写单个最终报告文件，文件名为 `{project_name}_vuln_scan_{YYYYMMDD_HHMMSS}.md`。
-7. 可运行 `scripts/validate_vuln_output.py <输出目录>` 检查报告格式和禁止项；检查结果只用于内部修正，不写入报告，也不告诉用户“已通过检查”。
+7. 可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_vuln_output.py <输出目录>` 检查报告格式和禁止项；检查结果只用于内部修正，不写入报告，也不告诉用户“已通过检查”。
 8. 面向用户的最终回复只给报告路径和一句固定结论，不输出 QA 过程、脚本日志、内部规则编号、组件命中数量、组件清单或额外漏洞摘要。
 
 ## Hard Rules
