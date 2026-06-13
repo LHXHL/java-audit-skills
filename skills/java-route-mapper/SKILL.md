@@ -65,6 +65,7 @@ description: Use when the user asks to extract, enumerate, map, or document Java
 - 通配符、网关分发、Struts 动态 action 不以模板代替实例；必须列出实际可达实例或 sub-function。
 - 输出文件链接、自检数量、状态 JSON 与实际文件一致。
 - pipeline worker 模式下，只写自己的模块目录和自己的反编译目录。
+- 所有数量、行数、类数、方法数和覆盖范围都必须是精确可复核值；不能写 `约`、`~`、`大约`、`60+`、`200+`、尾随加号或范围数量。没有精确枚举时写 `不可确认` 或 `未精确统计`。
 
 ## 输入与模式判断
 
@@ -116,6 +117,7 @@ description: Use when the user asks to extract, enumerate, map, or document Java
 - 禁止 `001 ~ 050` 这类范围代替逐项列表。
 - 禁止只列类名、WSDL 地址、namespace 名而不列具体入口。
 - 数量字段必须是精确数字，禁止 `200+`、`约 50`、`大量`。
+- 如果只知道某类 Action/Servlet/WebService 存在但未反编译出全部方法，不得写“剩余约 N 个”或“已知约 N 个”；应写精确已枚举数，并把未枚举部分写为 `不可确认`。
 
 如果输出太大，拆分文件；不要压缩为摘要。
 
