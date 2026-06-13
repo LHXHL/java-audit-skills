@@ -1,6 +1,6 @@
 ---
 name: java-deserialization-audit
-description: Java 反序列化漏洞深度审计。用户要求分析 DESERIALIZE sink、ObjectInputStream/readObject、XMLDecoder、Fastjson、XStream、JDBC 反序列化、Shiro RememberMe、Log4j/JNDI 或 gadget 链可利用性时触发；纯组件 CVE 查询、XXE 或 SQL 注入审计不触发。
+description: 用于 Java 反序列化漏洞深度审计。用户要求分析 DESERIALIZE sink、ObjectInputStream/readObject、XMLDecoder、Fastjson、XStream、JDBC 反序列化、Shiro RememberMe、Log4j/JNDI 或 gadget 链可利用性时触发；纯组件 CVE 查询、XXE 或 SQL 注入审计不触发。
 ---
 
 # Java 反序列化漏洞审计

@@ -1,6 +1,6 @@
 ---
 name: java-route-mapper
-description: Use when the user asks to extract, enumerate, map, or document Java Web routes/endpoints and request parameters from source, WAR/class/JAR artifacts, especially as input for later auth, tracer, SQL, XXE, upload, file-read, or full pipeline audit work. Do not use for vulnerability judgment, call-chain tracing, auth decisions, dependency CVE scanning, or generic API documentation polishing when route extraction is not required.
+description: 当用户要求从源码、WAR/class/JAR 产物中提取、枚举、映射或记录 Java Web 路由、端点和请求参数，尤其是为后续鉴权、调用链、SQL、XXE、上传、文件读取或完整流水线审计提供输入时使用；仅做漏洞判定、调用链追踪、鉴权判断、依赖 CVE 扫描，或不需要路由提取的通用 API 文档润色时不要使用。
 ---
 
 # Java Route Mapper
