@@ -1,320 +1,189 @@
 ---
 name: java-file-upload-audit
-description: Java Web 源码文件上传漏洞审计工具。用于从源码中识别所有文件上传入口并检查上传路径、文件名处理与校验逻辑漏洞。适用于：(1) 识别 Servlet/Commons FileUpload 与 Spring Boot MultipartFile 上传实现，(2) 发现任意文件上传、路径穿越与可执行文件上传漏洞，(3) 检查文件名/目录/类型/大小校验是否缺失或可绕过，(4) 审计上传目录与访问控制。**支持反编译 .class/.jar 文件提取上传逻辑**。结合 java-route-mapper 使用可实现完整的路由+文件上传审计。
+description: 当用户要求审计 Java 源码、字节码或 pipeline 证据中的文件上传、MultipartFile、Part、Commons FileUpload、FileItem、上传保存路径、文件名处理、上传目录访问性、任意文件写入或上传路径穿越风险时使用；只做路由枚举、调用链追踪、文件读取、XXE、SQL、反序列化、鉴权或组件漏洞编号扫描时不要使用。
 ---
 
-# Java 文件上传漏洞审计工具
-
-检查 Java Web 项目源码，识别文件上传实现并检测上传相关漏洞（任意文件上传、路径穿越、文件覆盖、Web 根目录可执行等）。
-
-## 核心要求
-
-**此技能必须完整分析所有上传相关代码，不允许省略。**
-
-- ✅ 识别所有上传入口点（ServletFileUpload / MultipartFile / transferTo / FileItem）
-- ✅ 标注每个上传点的保存路径、文件名来源与校验策略
-- ✅ 检测所有潜在的上传漏洞模式（类型校验缺失、路径穿越、Web 根目录写入、文件覆盖）
-- ✅ 当源码不可用时必须反编译，并输出反编译文件清单（文件名 + 位置）
-- ❌ 禁止省略任何上传入口
-- ❌ 禁止跳过反编译步骤
-
----
-
-## 漏洞分级标准
-
-**详见 [SEVERITY_RATING.md](../java-shared/SEVERITY_RATING.md)**
-
-- 漏洞编号格式: `{C/H/M/L}-UPLOAD-{序号}`
-- 严重等级 = f(可达性 R, 影响范围 I, 利用复杂度 C)
-- Score = R × 0.40 + I × 0.35 + C × 0.25，映射 CVSS 3.1
-
-| 前缀 | CVSS 3.1 | 含义 |
-|------|----------|------|
-| 🔴 **C** | 9.0-10.0 | 可直接导致系统沦陷 |
-| 🟠 **H** | 7.0-8.9 | 可造成重大损害 |
-| 🟡 **M** | 4.0-6.9 | 可造成一定损害 |
-| 🔵 **L** | 0.1-3.9 | 安全加固项 |
-
----
-
-## 技能协作流程（CRITICAL）
-
-**java-file-upload-audit 必须在 java-route-mapper 之后执行，基于已梳理的路由信息进行审计。**
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    完整审计流程                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  [步骤1] java-route-mapper                                      │
-│     │                                                           │
-│     │ 输出：                                                    │
-│     │ ├─ 所有 HTTP 路由列表                                     │
-│     │ ├─ 每个路由的参数定义                                     │
-│     │ │   ├─ 参数名、类型                                       │
-│     │ │   └─ JSON 内部字段                                      │
-│     │ └─ Burp Suite 请求模板                                    │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤2] java-file-upload-audit（本技能）                       │
-│     │                                                           │
-│     │ 输入：java-route-mapper 的输出                            │
-│     │                                                           │
-│     │ 执行：                                                    │
-│     │ ├─ 快速扫描上传实现                                       │
-│     │ ├─ 参数-上传映射分析                                      │
-│     │ ├─ 校验逻辑与保存路径分析                                 │
-│     │ └─ 执行条件分析                                           │
-│     │                                                           │
-│     ├─── 需要深入追踪 ───→ java-route-tracer                    │
-│     │                           │                               │
-│     │    ←── 返回调用链信息 ────┘                               │
-│     │                                                           │
-│     ↓                                                           │
-│  [步骤3] 输出综合审计报告                                       │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 输入依赖（来自 java-route-mapper）
-
-**在开始审计前，必须先检查是否已有 java-route-mapper 的输出文件：**
-
-```
-{project_name}_audit/
-├── route_mapper/
-│   ├── {project_name}_route_mapper_{timestamp}.md    ← 主索引（先读此文件定位模块详情）
-│   ├── {module_name}/
-│   │   └── {project_name}_module_{module_name}_{timestamp}.md  ← 模块详情
-│   └── webservice/
-│       └── {project_name}_ws_{service_name}_{timestamp}.md
-└── file_upload_audit/
-    └── {project_name}_file_upload_audit_{timestamp}.md  ← 本技能输出
-```
-
-**如果 route_mapper 输出不存在，建议先运行：**
-```python
-Skill(skill="java-route-mapper", args="--project {project_path}")
-```
-
-### 从 route_mapper 获取的关键信息
-
-| 信息 | 用途 |
-|:-----|:-----|
-| 路由路径 | 定位上传 Controller/Servlet 入口 |
-| 参数名 + 类型 | 识别 MultipartFile / FileItem / fileName 参数 |
-| JSON 内部字段 | 识别嵌套上传参数 |
-| 参数用途描述 | 判断是否用于文件名或保存路径 |
+# Java File Upload Audit
 
----
+## 当前定位
 
-## 工作流程（三阶段）
+`java-file-upload-audit` 是 Java 审计体系中的文件上传专项判定层。它读取源码、字节码、反编译结果、配置、`java-route-mapper` 路由清单或 `java-route-tracer` 调用链证据，判断用户提供的文件内容、文件名或上传路径是否进入危险文件写入点，并区分：
 
-### 阶段1: 快速扫描（优先执行）
+- 确认漏洞
+- 条件成立
+- 待验证
+- 不可确认
+- 非漏洞
 
-**目标：快速定位上传相关代码，不遗漏关键点。**
+本 skill 不负责全量路由枚举，不替代调用链追踪，不做鉴权结论，不生成可执行后门样本、风险评分或组件漏洞编号结论。对已达到“确认漏洞”或“条件成立”的风险，报告必须给出可交付给开发单位的授权验证材料：真实入口绑定的 Burp Suite 请求和低破坏 Payload。
 
-```bash
-# 1.1 Servlet/Commons FileUpload
-rg -n "ServletFileUpload|DiskFileItemFactory|FileItem|isMultipartContent" --glob="*.java"
+## 上下游边界
 
-# 1.2 Spring Boot MultipartFile
-rg -n "MultipartFile|@RequestParam\\(\"file\"\\)|transferTo\\(" --glob="*.java"
+上游输入可以是：
 
-# 1.3 文件名/路径相关
-rg -n "getOriginalFilename|getName\\(\\)|getRealPath\\(\"/uploads\"\\)|uploadDir" --glob="*.java"
-rg -n "new File\\(|Paths\\.get\\(|Path\\.of\\(|File\\.separator" --glob="*.java"
+- 用户指定的 Java 项目路径、Controller、Servlet、上传接口、上传工具类或 class/jar/war。
+- `java-route-mapper` 产出的上传路由、HTTP 方法、参数类型、Content-Type 和表单字段。
+- `java-route-tracer` 产出的上传参数到文件写入 sink 的调用链、分支条件和可控性。
+- Spring MVC、Servlet、Struts、Commons FileUpload、JAX-RS、WebService、定时导入或后台管理代码中的文件接收证据。
 
-# 1.4 上传接口路由
-rg -n "@PostMapping\\(|@RequestMapping\\(.*upload|/upload" --glob="*.java"
-```
+下游通常读取：
 
-**输出：高危文件清单（按优先级排序）**
+- 文件上传审计报告。
+- 上传点映射、保存路径、文件名来源、校验状态、Web 可访问性、执行条件和限制说明。
+- 已确认或条件成立风险的授权验证 Burp Suite 请求、Payload、前置条件和预期现象。
+- 需要交给 `java-route-tracer` 或 `java-auth-audit` 的证据缺口。
 
-| 优先级 | 文件类型 | 审计重点 |
-|:-------|:---------|:---------|
-| P0 | `*Controller.java` / `*Servlet.java` 中包含 upload 逻辑 | MultipartFile/FileItem |
-| P1 | `*Service.java`, `*ServiceImpl.java` | 文件保存路径/重命名 |
-| P2 | `*Util.java`, `*Storage.java`, `*File*.java` | 通用存储封装 |
-| P3 | `*Config.java`, `application.yml` | 文件大小/目录配置 |
+相邻 skill 边界：
 
-### 阶段2: 参数-上传映射分析
+- `java-route-mapper`：枚举上传路由和参数；本 skill 只消费路由证据。
+- `java-route-tracer`：追踪上传参数、文件名、目录和写入 sink；本 skill 在证据不足时请求追踪，不凭方法名推断可控。
+- `java-auth-audit`：判断上传入口鉴权、越权或未授权；本 skill 只记录鉴权上下文。
+- `java-file-read-audit`：判断读取或下载任意文件；本 skill 只判断上传写入路径。
+- `java-vuln-scanner`：扫描依赖组件漏洞编号；本 skill 不编造组件漏洞编号、风险评分或修复版本。
 
-**基于 route_mapper 输出，检查每个上传参数是否影响文件名或保存路径。**
+## 触发条件
 
-#### 2.1 高危参数识别
+满足任一条件时触发：
 
-| 参数来源 | 参数名 | 类型 | 漏洞等级 |
-|:---------|:-------|:-----|:-----|
-| @RequestParam | `file` | MultipartFile | **高危** - 直接上传 |
-| FileItem | `item` | FileItem | **高危** - fileName 可控 |
-| @RequestParam | `fileName` | String | **高危** - 文件名拼接 |
-| JSON | `upload.path` | String | **高危** - 目录拼接 |
+- 用户明确要求审计文件上传、任意文件上传、上传路径穿越、上传覆盖、上传目录可执行或上传校验绕过。
+- 代码中出现 `MultipartFile`、`Part`、`ServletFileUpload`、`DiskFileItemFactory`、`FileItem`、`transferTo`、`item.write`、`Files.copy`、`FileOutputStream`、`IOUtils.copy` 等上传接收或写入模式。
+- route-tracer 已报告请求文件、文件名或目录参数到达文件写入 sink，需要判断是否构成上传漏洞。
+- 项目只有字节码，需要定位上传入口、保存路径和校验逻辑。
+- 用户给出候选上传代码，要求判断类型校验、文件名处理、目录限制或 Web 可访问性是否安全。
 
-#### 2.2 参数追踪（示例）
+## 不触发条件
 
-```
-HTTP 参数: file (MultipartFile)
-    ↓
-Controller.handleFileUpload(file)
-    ↓
-file.getOriginalFilename()  ← 文件名来源
-    ↓
-Paths.get(uploadDir).resolve(fileName)
-    ↓
-file.transferTo(filePath)   ← 上传写入点
-```
+以下情况不要触发本 skill：
 
-#### 2.3 上传点检查
+- 只要求列出 Controller、Servlet、WebService 路由。
+- 只要求追踪参数调用链，不要求判断上传风险。
+- 只看到 `File`、`Path`、`InputStream` 或文件写入工具类，但没有外部上传内容、文件名或目录输入。
+- 只审计文件下载、任意文件读取、日志写入、导出报表、SQL、XXE、反序列化、鉴权或组件版本。
+- 文件内容由服务端生成，文件名和目录均由服务端固定且不可被请求影响。
+- 用户要求生成可执行后门样本、持久化内容、横向移动、批量验证脚本，或要求在缺少真实入口/授权语境时生成攻击请求。
+
+## 成功标准
 
-对每个上传写入点，检查：
-
-1. **文件名来源是否可控？**
-   - `getOriginalFilename()` / `item.getName()` → 高危
-   - 服务器生成随机名 → 低危
-
-2. **是否有路径规范化与目录限制？**
-   - `getCanonicalPath()` + 固定上传目录 → 较安全
-   - 直接拼接路径 → 高危
-
-3. **是否做类型/内容校验？**
-   - 白名单扩展名/Content-Type/魔数校验 → 安全
-   - 仅检查非空或无校验 → 高危
-
-4. **上传目录是否在 Web 根目录？**
-   - `getRealPath("/uploads")` / `/uploads/` → 高危
-   - 非 Web 可访问目录 → 较安全
-
-### 阶段3: 深入检查与报告
-
-当上传逻辑复杂或参数多层传递时，调用 java-route-tracer 获取完整调用链并补充校验路径分析。
-
----
-
-## 上传实现识别（来自 Notion 资料的关键点）
-
-### 1) Servlet/Commons FileUpload
-
-**识别特征：**
-- `ServletFileUpload.isMultipartContent(request)`
-- `DiskFileItemFactory` / `ServletFileUpload`
-- `upload.parseRequest(request)` → `List<FileItem>`
-- `item.getName()` 作为文件名
-- `item.write(storeFile)` 写入文件
-- `getServletContext().getRealPath("/uploads")` 作为保存目录
-
-**Notion 记录要点：**
-- 示例未校验表单字段名，`name="file"` **不会被校验**。
-- 仅设置了大小上限（如 `upload.setSizeMax(5MB)`），未见扩展名/类型/路径校验。
-
-### 2) Spring Boot MultipartFile
-
-**识别特征：**
-- `@RequestParam("file") MultipartFile file`
-- `file.getOriginalFilename()`
-- `file.transferTo(filePath)`
-- 固定上传目录 `uploadDir = "/uploads/"`
-
-**Notion 记录要点：**
-- `@RequestParam("file")` 会校验表单字段名，需要 `name="file"`。
-- 示例未见文件名净化、类型白名单或目录隔离。
-
-**详细检测规则参见** [UPLOAD_RULES.md](references/UPLOAD_RULES.md)
-
----
-
-## 反编译阶段（CRITICAL）
-
-**当源码不可用时，必须使用 CFR 反编译器反编译上传相关类（详见 `java-shared/DECOMPILE_STRATEGY.md`）。**
-
-### 反编译工具调用
-
-```bash
-# 反编译单个上传相关类
-java -jar {CFR_JAR} /path/to/UploadController.class --outputdir {output_path}/decompiled
-
-# 反编译上传相关目录
-find /path/to/WEB-INF/classes/com/example/upload -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-
-# 反编译多个指定文件
-java -jar {CFR_JAR} /path/to/UploadController.class /path/to/FileStorageService.class /path/to/UploadUtil.class --outputdir {output_path}/decompiled
-```
-
-### 必须反编译的类
-
-| 类型 | 匹配模式 | 目的 |
-|------|----------|------|
-| Controller/Servlet | `*Upload*Controller.class`, `*Servlet.class` | 提取上传入口 |
-| Service/Storage | `*Storage*.class`, `*FileService*.class` | 追踪保存路径 |
-| 工具类 | `*UploadUtil*.class`, `*FileUtil*.class` | 查找通用校验 |
-| 配置类 | `*Config*.class` | 获取上传目录/大小限制 |
-
-**反编译输出要求：**
-- 输出“反编译文件清单”，包含原始文件名与反编译输出路径
-- 反编译文件路径需可定位到具体目录
-
----
-
-## 执行条件分析（CRITICAL - 避免误报）
-
-**发现上传逻辑后，必须检查该逻辑是否真的会被执行！**
-
-| 检查项 | 说明 | 影响 |
-|--------|------|------|
-| 权限校验 | 仅管理员可访问 | 影响可利用性 |
-| 参数校验 | 字段名/类型/大小校验 | 降低漏洞可利用性 |
-| 目录限制 | 固定上传目录 | 降低路径穿越 |
-| 可访问性 | 上传目录是否可 Web 访问 | 决定是否可执行 |
-
-结论分级必须标注：✅ 已确认可利用 / ⚠️ 待验证 / ❌ 不可利用 / 🔍 环境依赖
-
----
-
-## 报告生成
-
-**输出单个综合审计报告文件：**
-
-```
-{project_name}_audit/file_upload_audit/
-└── {route_name}/
-    └── {project_name}_file_upload_audit_{timestamp}.md
-```
-
-**路由名说明：**
-- 路由名从路由路径提取，去掉前缀斜杠和特殊字符
-- 例如：`/api/file/upload` → `api_file_upload`
-
----
-
-## 输出格式
-
-**严格按照 [references/OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) 中的填充式模板生成输出文件。**
-
-- 文件名格式: `{project_name}_file_upload_audit_{YYYYMMDD_HHMMSS}.md`
-- 不得修改模板结构、不得增删章节、不得调整顺序
-- 所有【填写】占位符必须替换为实际内容
-- 通用规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
-- 漏洞聚合规则参考: [java-shared/VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md)，同根因多入口合并为一个漏洞编号并列出“受影响入口”，不同条件入口拆分。
-
----
-
-## 审计检查清单（防遗漏）
-
-### 代码分析检查
-- [ ] 所有上传入口已分析（Servlet/MultipartFile）
-- [ ] 每个上传点均标注文件名来源与保存路径
-- [ ] 目录与访问控制已分析
-
-### 反编译检查
-- [ ] 源码不可用时已反编译
-- [ ] 反编译文件清单已输出（文件名 + 位置）
-
-### 报告完整性检查
-- [ ] **综合审计报告已生成，且通过 OUTPUT_TEMPLATE.md 末尾的自检清单**
-
----
-
-## 参考资料
-
-- [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md) - 输出报告填充式模板
-- [UPLOAD_RULES.md](references/UPLOAD_RULES.md) - 上传实现识别与风险规则
+合格输出必须同时满足：
+
+- 每个结论都有入口或输入来源、文件内容来源、文件名来源、保存路径、写入 sink、校验逻辑和执行条件。
+- 不把普通文件写入、服务端导出、模板生成、固定配置落盘或缓存写入误报为文件上传漏洞。
+- 明确区分确认漏洞、条件成立、待验证、不可确认和非漏洞。
+- “条件成立”必须有真实入口、上传内容、写入 sink、可观察弱防护点和实际影响路径；纯配置加固项、工具类缺陷、假设某个白名单失效、或单纯文件大小阈值过大，不得单独写成条件成立。
+- 对文件名净化、路径规范化、目录限制、扩展名/Content-Type/魔数校验、大小限制、随机重命名、覆盖策略、Web 可访问性给出证据。
+- 同根因多入口按 `../java-shared/VULNERABILITY_GROUPING.md` 聚合；不同保存目录、文件名来源、校验条件或权限条件拆分。
+- 对“确认漏洞/条件成立”风险给出 Burp Suite 请求和 Payload，并明确鉴权、参数、文件名、文件内容、预期现象、清理要求和限制。
+- 报告严格使用 `references/OUTPUT_TEMPLATE.md` 的 6 个编号章节，不新增额外章节。
+- 不编造组件漏洞编号、风险评分、修复版本、可执行后门样本、验证成功结果、HTTP 响应或不存在的代码路径。
+
+## 工作流
+
+### 1. 确定审计范围
+
+- 读取用户指定路径、候选入口、上游 route/tracer 报告和上传相关配置。
+- 若没有入口证据，可做上传 sink 盘点，但结论只能是“待验证/不可确认/非漏洞”，不能写外部可利用。
+- 若只有工具类名、`upload` 字样或 `UNCONFIRMED` sink，先定位实现源码、字节码或反编译结果。
+- 上传点映射只列真实入口或可被外部触发的上传执行点；工具类、拦截器、第三方库、静态目录和配置文件只放第 4 节作为依据，不计入结论统计。
+
+### 2. 选择 reference
+
+- 上传识别和风险判定：读取 `references/UPLOAD_RULES.md`。
+- 授权验证输出：读取 `references/VALIDATION_GUIDE.md`。
+- 源码缺失或只给字节码：读取 `references/DECOMPILE_STRATEGY.md`。
+- 生成报告前：读取 `references/OUTPUT_TEMPLATE.md`。
+
+### 3. 定位上传入口和写入 sink
+
+优先查找真实上传执行点：
+
+- Servlet 3：`request.getParts()`、`request.getPart()`、`Part.write`、`Part.getInputStream`。
+- Spring：`MultipartFile`、`getOriginalFilename`、`transferTo`、`getInputStream`。
+- Commons FileUpload：`ServletFileUpload.parseRequest`、`FileItem.getName`、`FileItem.write`、`FileItem.getInputStream`。
+- 通用写入：`Files.copy`、`Files.write`、`FileOutputStream`、`FileUtils.copyInputStreamToFile`、`IOUtils.copy`、`Channel.transferFrom`。
+- Base64 或 JSON 上传：请求字符串解码后进入文件写入，也按上传候选处理。
+
+### 4. 追踪文件名、目录和校验
+
+- 文件名来源：`getOriginalFilename`、`Part.getSubmittedFileName`、`FileItem.getName`、请求参数、JSON 字段、服务端生成名。
+- 目录来源：固定配置、`getRealPath`、请求参数、数据库字段、租户/用户目录、临时目录。
+- 校验逻辑：扩展名白名单、Content-Type、魔数、MIME 探测、大小限制、重命名、路径规范化、目录前缀校验。
+- 写入后状态：是否位于 Web 根目录、是否可被静态资源访问、是否可被应用解析执行、是否覆盖已有文件。
+- 若跨层证据不足，切回 `java-route-tracer`；不要凭 `upload`、`saveFile`、`import` 等名称推断可控性。
+
+### 5. 判定执行条件
+
+- 确认安全检查必须发生在写入 sink 前，并作用于实际使用的文件名、目录和文件内容。
+- 黑名单、仅 Content-Type、仅大小限制、仅非空检查、仅替换部分分隔符不能单独证明安全。
+- 随机重命名降低文件名可控性，但不能替代类型/内容校验和目录隔离。
+- 数据流缺入口、缺写入 sink、缺校验证据、缺目录证据或缺执行条件时，输出待验证或不可确认。
+
+### 6. 输出报告
+
+- 使用 `references/OUTPUT_TEMPLATE.md`。
+- 对“确认漏洞/条件成立”项，按 `references/VALIDATION_GUIDE.md` 输出 Burp Suite 请求和 Payload。
+- 对“待验证”项，只写证据缺口和补证方向，不输出 Burp Suite 请求或 Payload。
+- 对“不可确认/非漏洞”项，不输出 Burp Suite 请求或 Payload。
+- 对没有确认漏洞的审计，也要输出已检查上传点、候选风险、非漏洞依据、不可确认项和待补证据。
+
+## Hard Rules
+
+1. 没有外部文件内容、文件名或目录输入，不得下上传漏洞结论。
+2. 没有真实文件写入 sink，不得下上传漏洞结论。
+3. 没有证据证明校验缺失、不完整或顺序错误，不得下确认漏洞。
+4. `UNCONFIRMED`、工具类名、拦截器名、上传目录字符串、`upload` 方法名、框架依赖或单个配置项只表示候选或加固点，不是漏洞。
+5. 结论状态必须使用中文枚举：确认漏洞、条件成立、待验证、不可确认、非漏洞。
+6. “确认漏洞/条件成立”必须输出绑定真实入口、参数和鉴权状态的 Burp Suite 请求与 Payload；不得只写泛化验证思路。
+7. “待验证/不可确认/非漏洞”不得输出 Burp Suite 请求或 Payload，即使入口看起来可访问；只写需要补充的源码、反编译、route-tracer、鉴权或运行配置证据。
+8. Burp Suite 请求和 Payload 只能用于授权验证，必须使用占位符表示主机、Cookie、CSRF、边界值和环境变量，不得声称测试结果已经达成。
+9. 不输出可执行后门样本、持久化脚本、批量利用脚本、横向移动步骤或破坏性内容；文件内容 Payload 使用无害 marker。
+10. 不编造组件漏洞编号、风险评分、修复版本、文件内容、HTTP 响应或验证结果。
+11. 反编译证据必须指向真实存在且已读取的源码、反编译文件或 class/jar 来源；路径不存在时只能写不可确认。
+12. 未取得反编译/反汇编结果时，报告只写“本轮未取得反编译/反汇编结果”以及因此缺少哪些代码证据；不得解释原因、环境、安装状态、权限、审批、申请、拒绝、拦截或工具许可。
+13. 结论统计数量必须与上传点映射和风险详情一致；聚合时要写清映射行和风险详情的对应关系。
+14. 报告文件名和生成时间必须使用真实运行时刻，不得使用 `000000`、`00:00:00` 或占位时间。
+15. 报告全文禁止出现三个连续英文句点；无法完整确认时写中文“省略非关键字段”或限制说明。
+
+## Gotchas
+
+- `MultipartFile` 参数不等于漏洞；如果服务端生成随机文件名、目录不可访问且内容白名单充分，通常不是漏洞。
+- 仅校验 `Content-Type` 或文件后缀不可靠，尤其当文件内容未校验或上传目录可执行时。
+- `getOriginalFilename` 和 `FileItem.getName` 可能包含客户端路径、路径分隔符或特殊字符，必须看净化与规范化。
+- `Paths.get(base, name).normalize()` 之后仍需确认最终路径在允许目录下。
+- `getRealPath` 写入 Web 根目录通常提高风险，但是否可执行取决于容器映射、扩展名处理和静态资源配置。
+- 上传后立刻解析、导入、解压或转码时，要同时检查二次写入、临时文件、压缩包路径穿越和清理逻辑。
+- 文件导出、报表生成、图片缩略图生成通常不是上传入口，除非文件内容或文件名来自请求上传。
+- 只看到 Struts `fileUpload` 拦截器缺少 `allowedTypes/allowedExtensions`，但没有 Action sink、后续自定义拦截器或保存目录证据时，最多写“待验证”，不要写“条件成立”。
+- 黑名单、白名单、魔数和随机重命名并存时，不能因为黑名单覆盖范围有限就写条件成立；必须证明某条可达分支只依赖黑名单，或白名单/魔数未在写入前生效。
+- 单纯 `maximumSize` 过大属于容量配置加固点；除非用户明确审计 DoS，且有未鉴权可达入口和临时目录影响证据，否则不要作为文件上传漏洞单独编号，也不要输出 Burp/Payload。
+- 白名单包含 `zip`、Office、文本、图片、视频等业务类型，不等于上传漏洞；只有存在后续自动解析、可访问目录、类型混淆或内容校验缺失导致的实际影响时，才可写“条件成立”。
+- 只有前端 JavaScript 校验、JSP 表单或 Base64 字段，缺服务端处理实现时，不得写“非漏洞”；应写“待验证”或“不可确认”。
+- `web.xml` 声明的 Servlet 找不到实现 class/jar 时，写“不可确认”，不要混写“待验证”。
+- 报告可以最小引用代码中真实出现的扩展名常量。验证 Payload 需要文件名时，优先使用无害 marker 文件名；若必须证明类型校验缺陷，文件名或扩展名必须来自真实入口和授权验证上下文，且不得包含后门内容。
+
+## 停止、确认或切换条件
+
+- 找不到实现源码、反编译结果或字节码证据时：停止确认漏洞，输出不可确认。
+- 需要先知道请求参数是否到达写入 sink 时：切换到 `java-route-tracer`。
+- 需要判断上传入口是否未授权或越权时：交给 `java-auth-audit`。
+- 需要判断上传后的文件读取、下载或目录遍历时：交给 `java-file-read-audit`。
+- 用户要求组件版本漏洞或组件编号查询时：交给 `java-vuln-scanner`。
+- 用户要求可执行后门样本、持久化内容、横向移动或批量验证脚本时：拒绝该部分，只保留绑定真实入口的低破坏授权验证材料。
+
+## Eval
+
+| 类型 | 用户请求或场景 | 预期行为 |
+|------|----------------|----------|
+| 正例 | “审计这个 MultipartFile 上传接口是否能任意文件上传。” | 触发，定位入口、文件名、保存路径、校验和 Web 可访问性 |
+| 正例 | “WAR 里只有 class，帮我看上传保存路径有没有路径穿越。” | 触发，读取反编译策略，先定位上传相关类 |
+| 正例 | “检查 Commons FileUpload 代码有没有限制扩展名和目录。” | 触发，读取上传规则并输出上传点映射 |
+| 反例 | “列出所有 POST 路由。” | 不触发，使用 `java-route-mapper` |
+| 反例 | “追踪 fileId 最后读了哪个文件。” | 不触发，使用 `java-file-read-audit` 或 `java-route-tracer` |
+| 反例 | “检查 commons-fileupload 组件漏洞编号。” | 不触发，使用 `java-vuln-scanner` |
+| 边界例 | 上传图片后服务端重命名并写入非 Web 目录 | 记录上传点，通常非漏洞或低风险加固 |
+| 边界例 | Base64 字符串解码后写入请求参数指定文件名 | 触发，按上传候选追踪文件名和目录 |
+| 边界例 | 上传 zip 后解压到服务端目录 | 触发，检查压缩包路径穿越和二次写入 |
+| 失败案例 | 只看到 `/upload` 路由就写任意文件上传 | 不合格，缺写入 sink 和校验证据 |
+| 失败案例 | 确认漏洞却没有 Burp Suite 请求和 Payload | 不合格，无法交付开发单位复现 |
+| 失败案例 | 输出可执行后门样本文件名、持久化内容或批量利用脚本 | 不合格，违反安全边界 |
+| 失败案例 | 把报表导出写文件误报为上传漏洞 | 不合格，缺外部上传输入 |
+| 失败案例 | 把工具类、拦截器或 `maximumSize` 配置单独列为上传点 | 不合格，统计口径错误 |

@@ -1,258 +1,51 @@
-# 注解参考手册
-
-## 目录
-
-- [Spring 注解](#spring-注解)
-- [JAX-RS 注解](#jax-rs-注解)
-- [Servlet 注解](#servlet-注解)
-- [参数绑定注解](#参数绑定注解)
-- [验证注解](#验证注解)
-
----
-
-## Spring 注解
-
-### 路由定义
-
-| 注解 | 作用 | 示例 |
-|------|------|------|
-| `@Controller` | 标记控制器类 | `@Controller public class UserCtrl {}` |
-| `@RestController` | REST 控制器（=@Controller+@ResponseBody） | `@RestController public class UserApi {}` |
-| `@RequestMapping` | 类/方法级别路由 | `@RequestMapping("/api/users")` |
-| `@GetMapping` | GET 路由 | `@GetMapping("/users/{id}")` |
-| `@PostMapping` | POST 路由 | `@PostMapping("/users")` |
-| `@PutMapping` | PUT 路由 | `@PutMapping("/users/{id}")` |
-| `@PatchMapping` | PATCH 路由 | `@PatchMapping("/users/{id}")` |
-| `@DeleteMapping` | DELETE 路由 | `@DeleteMapping("/users/{id}")` |
-
-### @RequestMapping 属性
-
-```java
-@RequestMapping(
-    // 路径
-    value = {"/path1", "/path2"},
-
-    // HTTP 方法
-    method = {RequestMethod.GET, RequestMethod.POST},
-
-    // 请求参数条件
-    params = {"action=save", "!debug"},
-
-    // 请求头条件
-    headers = {"X-Requested-With=XMLHttpRequest", "Content-Type=application/json"},
-
-    // 可消费的 Content-Type
-    consumes = {"application/json", "application/xml"},
-
-    // 可生产的 Content-Type
-    produces = {"application/json; charset=UTF-8"}
-)
-```
-
----
-
-## JAX-RS 注解
-
-### 路由定义
-
-| 注解 | 作用 | 示例 |
-|------|------|------|
-| `@Path` | 类/方法级别路径 | `@Path("/users")` |
-| `@GET` | GET 方法 | `@GET public Response list() {}` |
-| `@POST` | POST 方法 | `@POST public Response create() {}` |
-| `@PUT` | PUT 方法 | `@PUT public Response update() {}` |
-| `@DELETE` | DELETE 方法 | `@DELETE public Response delete() {}` |
-| `@HEAD` | HEAD 方法 | `@HEAD public Response head() {}` |
-| `@OPTIONS` | OPTIONS 方法 | `@OPTIONS public Response options() {}` |
-
-### 内容协商
-
-| 注解 | 作用 | 示例 |
-|------|------|------|
-| `@Consumes` | 可接受的请求类型 | `@Consumes(MediaType.APPLICATION_JSON)` |
-| `@Produces` | 可生成的响应类型 | `@Produces(MediaType.APPLICATION_JSON)` |
-
----
-
-## Servlet 注解
-
-| 注解 | 作用 | 示例 |
-|------|------|------|
-| `@WebServlet` | 定义 Servlet | `@WebServlet("/users")` |
-| `@WebFilter` | 定义过滤器 | `@WebFilter(urlPatterns="/api/*")` |
-| `@WebListener` | 定义监听器 | `@WebListener public class AppListener {}` |
-
-### @WebServlet 属性
-
-```java
-@WebServlet(
-    // URL 模式
-    urlPatterns = {"/users", "/user/*"},
-
-    // Servlet 名称
-    name = "UserServlet",
-
-    // 初始化参数
-    initParams = {
-        @WebInitParam(name = "encoding", value = "UTF-8")
-    },
-
-    // 启动时加载顺序
-    loadOnStartup = 1,
-
-    // 是否支持异步
-    asyncSupported = true
-)
-```
-
----
-
-## 参数绑定注解
-
-### Spring 参数注解
-
-| 注解 | 来源 | 示例 |
-|------|------|------|
-| `@PathVariable` | 路径变量 | `{id}` → `@PathVariable Long id` |
-| `@RequestParam` | 查询参数 | `?name=xxx` → `@RequestParam String name` |
-| `@RequestBody` | 请求体 | JSON Body |
-| `@RequestHeader` | 请求头 | `@RequestHeader("Authorization")` |
-| `@CookieValue` | Cookie | `@CookieValue("JSESSIONID")` |
-| `@RequestAttribute` | 请求属性 | `@RequestAttribute("user")` |
-| `@SessionAttribute` | Session 属性 | `@SessionAttribute("user")` |
-| `@MatrixVariable` | 矩阵变量 | `/users;q=10;r=20` |
-
-### @RequestParam 属性
-
-```java
-@RequestParam(
-    // 参数名（可省略，默认使用方法参数名）
-    value = "username",
-
-    // 是否必需（默认 true）
-    required = false,
-
-    // 默认值
-    defaultValue = "guest"
-)
-```
-
-### JAX-RS 参数注解
-
-| 注解 | 来源 | 示例 |
-|------|------|------|
-| `@PathParam` | 路径变量 | `{id}` → `@PathParam("id") Long id` |
-| `@QueryParam` | 查询参数 | `?name=xxx` → `@QueryParam("name")` |
-| `@FormParam` | 表单参数 | `@FormParam("username")` |
-| `@HeaderParam` | 请求头 | `@HeaderParam("Authorization")` |
-| `@CookieParam` | Cookie | `@CookieParam("JSESSIONID")` |
-| `@MatrixParam` | 矩阵参数 | `;name=value` |
-| `@BeanParam` | 参数封装 | `@BeanParam UserParams params` |
-
-### @DefaultValue (JAX-RS)
-
-```java
-@QueryParam("page") @DefaultValue("0") int page
-```
-
----
-
-## 验证注解
-
-### Jakarta Validation
-
-| 注解 | 作用 | 示例 |
-|------|------|------|
-| `@NotNull` | 不为 null | `@NotNull String name` |
-| `@NotEmpty` | 不为空 | `@NotEmpty String name` |
-| `@NotBlank` | 不为空白 | `@NotBlank String name` |
-| `@Size` | 长度范围 | `@Size(min=2, max=10)` |
-| `@Min` / `@Max` | 数值范围 | `@Min(18) int age` |
-| `@Email` | 邮箱格式 | `@Email String email` |
-| `@Pattern` | 正则匹配 | `@Pattern(regexp="[A-Z]{2}")` |
-| `@Valid` | 嵌套验证 | `@Valid UserDto user` |
-
----
-
-## 其他常用注解
-
-### Cross-Origin
-
-```java
-@CrossOrigin(
-    origins = "http://localhost:8080",
-    methods = {RequestMethod.GET, RequestMethod.POST},
-    allowedHeaders = {"Content-Type", "Authorization"},
-    credentials = "true",
-    maxAge = 3600
-)
-```
-
-### Response Body
-
-```java
-@ResponseBody  // Spring: 直接写入响应体
-Response        // JAX-RS: 返回 Response 对象
-
-// 示例
-@GET
-public Response getUser() {
-    return Response.ok(userEntity).build();
-    return Response.status(Response.Status.NOT_FOUND).build();
-    return Response.status(401).entity("Unauthorized").build();
-}
-```
-
----
-
-## 注解继承规则
-
-### Spring
-
-- `@RequestMapping` 在类级别可被方法级别继承
-- 子类方法覆盖父类时，注解不自动继承（需重新声明）
-
-### JAX-RS
-
-- `@Path` 在类级别可被方法级别继承
-- 子类继承父类的 `@Path`
-
----
-
-## 自定义注解
-
-```java
-// 目标：定义在方法上
-@Target(ElementType.METHOD)
-// 运行时保留
-@Retention(RetentionPolicy.RUNTIME)
-// 作为 @RequestMapping 的元注解
-@RequestMapping(method = RequestMethod.GET)
-public @interface MyGetMapping {
-    @AliasFor(annotation = RequestMapping.class)
-    String[] value() default {};
-}
-
-// 使用
-@MyGetMapping("/users")
-public List<User> list() { }
-```
-
----
-
-## 注解处理器示例
-
-```java
-// 扫描特定注解
-Reflections reflections = new Reflections("com.example");
-Set<Class<?>> controllers = reflections.getTypesAnnotatedWith(Controller.class);
-
-// 分析方法上的注解
-for (Method method : controller.getDeclaredMethods()) {
-    if (method.isAnnotationPresent(GetMapping.class)) {
-        GetMapping mapping = method.getAnnotation(GetMapping.class);
-        String[] paths = mapping.value();
-        // 处理路径
-    }
-}
-```
+# 注解与参数绑定参考
+
+只在需要从注解判断路由、HTTP 方法、参数来源或 Content-Type 时读取本文件。
+
+## 路由注解
+
+| 技术 | 注解 | 提取内容 |
+|------|------|----------|
+| Spring | `@RequestMapping` | path/value、method、consumes、produces |
+| Spring | `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping` | HTTP 方法由注解决定，path/value 同步读取 |
+| Spring | `@Controller`, `@RestController` | 标记类为 Spring Web 入口候选 |
+| JAX-RS | `@Path` | 类级和方法级路径 |
+| JAX-RS | `@GET`, `@POST`, `@PUT`, `@DELETE`, `@PATCH` | HTTP 方法 |
+| JAX-RS | `@Consumes`, `@Produces` | 请求和响应媒体类型 |
+| Servlet | `@WebServlet` | urlPatterns/value/name/loadOnStartup |
+| JAX-WS | `@WebService`, `@WebMethod` | SOAP 服务和暴露方法；URL 仍优先来自配置 |
+
+## 参数来源映射
+
+| 来源 | Spring | JAX-RS | Servlet 代码模式 |
+|------|--------|--------|------------------|
+| Path | `@PathVariable` | `@PathParam` | `getPathInfo()` 后解析 |
+| Query/Form | `@RequestParam`, 未注解简单类型 | `@QueryParam`, `@FormParam` | `request.getParameter*` |
+| Body JSON/XML | `@RequestBody` | 无注解实体参数、`@Consumes` | `getInputStream()`, `getReader()` |
+| Header | `@RequestHeader` | `@HeaderParam` | `getHeader()` |
+| Cookie | `@CookieValue` | `@CookieParam` | `getCookies()` |
+| File | `MultipartFile`, `Part` | multipart provider | `getPart()`, Commons FileUpload |
+| Bean wrapper | `@ModelAttribute`, DTO | `@BeanParam` | 手动 set 到对象 |
+
+## 参数类型解析优先级
+
+1. 方法签名类型。
+2. 注解属性，如 `required`, `defaultValue`, `name`, `value`。
+3. DTO 字段、getter/setter、构造器绑定。
+4. Bean validation 注解，如 `@NotNull`, `@Size`, `@Pattern`，只用于辅助必填/格式判断。
+5. 反编译结果。
+
+## 注解组合规则
+
+- 类级路径 + 方法级路径共同组成最终路径。
+- 多个 path/value 要展开为多条 route。
+- 多个 HTTP method 要展开为多条 route，或在同一块中明确列出多个方法；计数必须一致。
+- `consumes` 影响 Body 类型和 Content-Type。
+- 自定义组合注解需要追到其 meta-annotation，例如自定义 `@AdminApi` 上的 `@RequestMapping`。
+
+## Gotchas
+
+- Spring 未注解的复杂对象常来自 Query/Form 绑定，不要默认当作 JSON body。
+- `@RequestBody(required=false)` 仍是 Body 参数，只是可选。
+- `@WebMethod(exclude=true)` 不应列为 SOAP 方法。
+- Lombok 不改变 HTTP 参数来源，但会影响字段可见性；字段仍要从源码或反编译解析。

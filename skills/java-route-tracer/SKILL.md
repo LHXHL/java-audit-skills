@@ -1,1249 +1,294 @@
 ---
 name: java-route-tracer
-description: Java Web 源码路由多层级调用链追踪工具。根据用户指定的路由路径，追踪从 Controller/Action 到 DAO 层的完整调用链，输出每一层的文件位置、方法签名和可传入参数。适用于多种漏洞类型的参数流向追踪：(1) SQL注入 - 追踪参数到SQL拼接点，(2) 命令注入 - 追踪参数到Runtime.exec()，(3) SSRF - 追踪参数到HTTP请求，(4) XSS - 追踪参数到响应输出，(5) 文件操作 - 追踪参数到File操作，(6) XXE/反序列化/LDAP注入/表达式注入等。支持 Spring MVC、Struts 2、Servlet、JAX-RS 等框架。**支持反编译 .class/.jar 文件提取调用链**。结合 java-route-mapper 使用可实现完整的路由+调用链审计。
+description: 当用户要求从已知 Java Web 路由、入口方法或 pipeline 批次追踪参数调用链到 SQL/FILE/XML/COMMAND/HTTP/LDAP/EXPRESSION/DESERIALIZE/RESPONSE 等 sink，并输出可控性、分支条件和证据时使用；只提取路由、判断具体漏洞、鉴权审计或依赖组件风险扫描时不要使用。
 ---
 
-# Java Route Tracer - 路由调用链追踪
+# Java Route Tracer
 
-根据用户指定的路由，追踪从入口到最终使用点的完整调用链，输出层级调用信息。**适用于多种漏洞类型的参数流向追踪。**
+## 当前定位
 
-## 核心功能
+`java-route-tracer` 是 Java 审计技能集中的“调用链证据层”。它从一个已知 Web 入口出发，回答：
 
-**只输出调用链信息，不进行漏洞检测或安全建议。**
+- 请求从哪个路由或入口方法进入。
+- 用户参数在 Controller/Action/Servlet/WebService、Service、DAO、Util、Mapper 等层之间如何传递、改名、转换或覆盖。
+- 参数是否到达敏感 sink，sink 类型和代码位置是什么。
+- 到达 sink 前需要满足哪些分支条件。
+- 参数在 sink 处是完全可控、条件可控、受限可控、不可控还是未知。
 
-输出内容包括：
-- **完整 HTTP 数据包** - Burp Suite 可直接使用的请求模板
-- **详细参数定义** - 每个参数的名称、类型、嵌套结构
-- **层级调用关系** - Controller → Service → DAO → 父类
-- **参数流向追踪** - 从 HTTP 入口到最终使用点的完整路径
-- **参数变量名追踪** - 同一参数在不同类中的变量名变化
-- **最终使用点标注** - 参数在最终层如何被使用
+它输出的是下游专项审计的证据，不直接下漏洞结论。
 
-## 适用漏洞类型
+上游通常来自：
 
-| 漏洞类型 | 追踪最终使用点 |
-|:---------|:---------------|
-| SQL 注入 | `sql + param`、`Statement.execute()`、MyBatis `${}`、Hibernate HQL 拼接 |
-| 命令注入 | `Runtime.exec(cmd)`、`ProcessBuilder(cmd)` |
-| SSRF | `HttpClient.execute(url)`、`URL.openConnection()`、`RestTemplate` |
-| XSS | `response.getWriter().write()`、模板引擎输出、`@ResponseBody` |
-| 文件操作 | `new File(path)`、`FileInputStream()`、`Files.read()` |
-| XXE | `DocumentBuilder.parse()`、`SAXParser`、`XMLReader` |
-| 反序列化 | `ObjectInputStream.readObject()`、`JSON.parseObject()` |
-| LDAP 注入 | `DirContext.search(filter)`、`LdapTemplate` |
-| 表达式注入 | `SpelExpression.getValue()`、OGNL、MVEL、Freemarker |
-| 路径遍历 | `new File(basePath + userInput)`、`Paths.get()` |
-
----
+- `java-route-mapper` 的路由、参数、入口位置。
+- `java-auth-audit` 或 pipeline `cross_analysis/` 提供的鉴权状态和风险等级。
+- 用户直接指定的路由、类方法、批次清单。
 
-## 工作流程
+下游通常由以下 skill 或 pipeline 阶段读取：
 
-### 1. 接收用户输入
+- `java-sql-audit`
+- `java-xxe-audit`
+- `java-file-upload-audit`
+- `java-file-read-audit`
+- `java-deserialization-audit`
+- `java-audit-pipeline` 阶段4的 agent-6x
 
-用户提供：
-- **路由路径**：如 `/admin/user_login.action` 或 `/api/faceCapture`
-- **项目路径**：源码或反编译文件所在目录
+## 触发条件
 
-### 2. 定位入口点与方法识别
+用户意图包含以下任一项时触发：
 
-根据框架类型定位路由入口类：
+- 追踪某个 Java Web 路由从入口到 DAO、文件、XML、反序列化、命令、HTTP 请求、响应输出等 sink 的调用链。
+- 基于 route mapper 输出继续分析某条或一批路由的参数流向。
+- 判断某个请求参数是否到达指定 sink，或在到达前是否被覆盖、过滤、白名单限制。
+- 需要为 SQL/XXE/上传/文件读取/反序列化等专项审计准备可复用调用链证据。
+- pipeline 中 `agent-5-N` 被分配一批高危路由，需要生成 `route_tracer/` 报告。
 
-| 框架 | 入口定位方式 |
-|:-----|:-------------|
-| Spring MVC | `@RequestMapping` 注解匹配 |
-| Struts 2 | struts.xml 中 action 配置 |
-| Servlet | web.xml 或 `@WebServlet` |
-| JAX-RS | `@Path` 注解匹配 |
+必须存在明确边界：具体路由、入口类方法、route mapper 条目、trace batch、用户点名的参数/sink，或用户明确限定的少量入口集合。只给项目路径并说“找可定位入口”“全项目追踪”“所有调用链”时，不要自行展开。
 
-**重要说明**：当入口类包含多个业务方法时（如 Web Service 有多个接口方法、Controller 有多个端点方法），技能会自动识别并追踪所有方法。详细实现策略请参考：[multi-method-tracing.md](references/multi-method-tracing.md)
+典型说法：
 
-### 2.1 多方法追踪执行流程（强制要求）
+- “追踪 `/api/example/list` 的 `requestDto.sortField` 到 SQL 执行点。”
+- “基于 route_mapper，对这批 P0 路由生成调用链报告。”
+- “这个上传接口的 `fileName` 经过哪些方法传到 `transferTo`？”
+- “只看调用链和可控性，不要先判漏洞。”
+- “agent-5-2 处理 trace_batch_plan 里的这些路由。”
 
-**必须严格按照以下步骤执行，使用 TodoWrite 工具管理任务：**
+## 不触发条件
 
-#### 步骤 1: 统计所有方法
+相似但不应触发的任务：
 
-首先扫描入口类，识别所有需要追踪的方法，输出方法清单：
+- 只要求提取全部路由、参数或 WebService 方法清单：使用 `java-route-mapper`。
+- 只要求判断 SQL 注入、XXE、上传、文件读取或反序列化漏洞是否成立：使用对应专项 skill；本 skill 可作为其上游证据。
+- 只要求鉴权覆盖、越权、认证绕过：使用 `java-auth-audit`。
+- 只扫描依赖版本和组件风险：使用 `java-vuln-scanner`。
+- 用户没有给出路由、入口方法、route mapper 输出或可定位范围，只说“分析整个项目所有调用链”：先切换到 route mapper 或要求明确范围。
+- 用户只给源码路径并要求“选择可定位入口”或“尽量追踪”：不生成全量报告，先要求用户指定入口或 route mapper 批次。
+- 纯内部方法、定时任务、MQ/RPC 入口的追踪，除非用户明确要求把它作为非 HTTP 入口证据；默认不把它伪装成 Web 路由。
 
-```
-正在扫描入口类: UserQueryServiceImpl
+边界例：
 
-发现以下 10 个方法需要追踪:
-1. getBasicQuery(searchJson, pageJson, extend)
-2. getAdvancedQuery(searchJson, pageJson, extend)
-3. getDetailQuery(searchJson, pageJson, extend)
-4. getStatisticsQuery(searchJson, pageJson, extend)
-5. getExportQuery(searchJson, pageJson, extend)
-... (列出所有方法)
-10. getReportQuery(searchJson, pageJson, extend)
-
-共计: 10 个方法
-```
+- “这个接口有没有 SQL 注入？”不直接触发本 skill；若缺少调用链证据，先说明应由 `java-route-tracer` 产出证据，再交给 `java-sql-audit` 判定。
+- “列出 `/api/**` 所有接口。”不触发本 skill，使用 `java-route-mapper`。
+- “追踪 `/ws/userService` 下所有 SOAP 方法参数流向。”触发本 skill，但只追踪配置真实暴露的方法，不把实现类所有 public helper 都当入口。
 
-#### 步骤 2: 创建 TodoList 任务
-
-**必须使用 TodoWrite 工具，将每个方法添加为独立任务：**
-
-```python
-TodoWrite([
-    {"content": "追踪方法 1/10: getBasicQuery", "status": "pending", "activeForm": "追踪 getBasicQuery"},
-    {"content": "追踪方法 2/10: getAdvancedQuery", "status": "pending", "activeForm": "追踪 getAdvancedQuery"},
-    {"content": "追踪方法 3/10: getDetailQuery", "status": "pending", "activeForm": "追踪 getDetailQuery"},
-    {"content": "追踪方法 4/10: getStatisticsQuery", "status": "pending", "activeForm": "追踪 getStatisticsQuery"},
-    # ... 所有 10 个方法
-    {"content": "追踪方法 10/10: getReportQuery", "status": "pending", "activeForm": "追踪 getReportQuery"},
-    {"content": "生成总索引文件", "status": "pending", "activeForm": "生成总索引"}
-])
-```
+## 成功标准
 
-#### 步骤 3: 逐个执行任务（优化策略）
+合格输出必须让下游审计员可以不重新猜入口，直接回答“哪个参数、经过哪条链、到达哪个 sink、受什么条件限制”。
 
-按照 TodoList 顺序执行每个任务，根据接口数量采用不同的追踪策略：
+最低要求：
 
-| 接口序号 | 追踪策略 | 报告内容 |
-|:---------|:---------|:---------|
-| 第 1 个接口 | 完整追踪链 | 包含所有层级、分支、变量追踪、可控性判定 |
-| 第 2 个及之后的接口 | 简化追踪链 | 必须包含：请求模板 + 该方法参数定义 + 调用链 + Sink识别 + 可控性判定 |
-
-**执行流程：**
-1. 将当前任务标记为 `in_progress`
-2. 根据接口序号选择追踪策略
-3. 生成相应类型的报告文件
-4. 将任务标记为 `completed`
-5. 继续下一个任务
-
-```
---- 方法 1/10: getBasicQuery ---
-状态: in_progress
-[完整追踪链...]
-[生成报告: myproject_trace_getBasicQuery_20260205.md]
-状态: completed ✅
-
---- 方法 2/10: getAdvancedQuery ---
-状态: in_progress
-[简化追踪链...]
-[生成报告: myproject_trace_getAdvancedQuery_20260205.md (简化版)]
-状态: completed ✅
-
---- 方法 3/10: getDetailQuery ---
-状态: in_progress
-[简化追踪链...]
-[生成报告: myproject_trace_getDetailQuery_20260205.md (简化版)]
-状态: completed ✅
-
-... 继续直到所有任务完成 ...
-```
-
-#### 步骤 4: 完成验证
-
-所有方法追踪完成后：
-
-1. 生成总索引文件
-2. 验证生成的文件数量
-3. 输出完成报告
-
-```bash
-# 验证命令
-ls route_tracer/{route_name}/*.md | wc -l
-# 期望结果: 11 (10个方法报告 + 1个总索引)
-```
-
-### 2.2 中断恢复机制
-
-**如果执行中断，下次继续时必须：**
-
-1. 检查已生成的报告文件
-2. 对比方法清单，识别未完成的方法
-3. 只为未完成的方法创建 TodoList 任务
-4. 继续执行
-
-```python
-# 检查已完成的方法
-existing_files = ls("/path/to/route_tracer/{route_name}/*.md")
-completed_methods = [extract_method_name(f) for f in existing_files]
-
-# 创建剩余任务
-remaining_tasks = []
-for method in all_methods:
-    if method not in completed_methods:
-        remaining_tasks.append({
-            "content": f"追踪方法: {method}",
-            "status": "pending",
-            "activeForm": f"追踪 {method}"
-        })
-
-TodoWrite(remaining_tasks)
-```
-
-### 2.3 强制规则
-
-| 规则 | 说明 |
-|:-----|:-----|
-| **必须统计** | 开始前必须统计并输出所有方法数量 |
-| **必须用 TodoList** | 必须使用 TodoWrite 将每个方法添加为任务 |
-| **接口优化策略** | 当接口数量 > 3 时，采用以下优化方案：<br>- 第 1 个接口：生成完整调用链追踪（包含所有层级、分支、变量追踪）<br>- 第 2 个及之后的接口：只生成完整 Burp Suite 数据包 + 简单追踪链（不包含详细代码和分支判定） |
-| **必须标记状态** | 每个任务完成后立即标记为 completed |
-| **禁止提前结束** | TodoList 中有 pending 任务时禁止结束 |
-| **必须验证数量** | 结束前必须验证生成的文件数量 |
-
-### 2.4 文件生成规则（强制）
-
-**所有接口数量统一使用以下策略，无需分批处理：**
-
-| 接口序号 | 报告类型 | 内容 |
-|:---------|:---------|:-----|
-| 第 1 个 | 完整版 | 所有层级、分支、变量追踪、可控性判定（约 20000-30000 字符） |
-| 第 2 个及之后 | 简化版 | 请求模板 + 该方法参数定义 + 调用链 + Sink识别 + 可控性判定（约 2000-4000 字符） |
-
-**文件命名规范：**
-
-| 规则 | 格式 |
-|:-----|:-----|
-| ✅ 正确 | `{项目名}_trace_{方法名}_{时间戳}.md` |
-| ❌ 错误 | `{方法名}_{时间戳}.md` （缺少项目前缀） |
-
-**变量替换检查（强制）：**
-
-生成每个简化版报告时，必须确保以下内容被正确替换（禁止保留模板变量）：
-
-| 检查项 | 错误示例 | 正确示例 |
-|:-------|:---------|:---------|
-| 方法名 | `${method}` | `queryUserById` |
-| 路由路径 | `/api/${method}` | `/biz/ws/userService` → `queryUserById` |
-| 服务实现类 | `${ServiceImpl}` | `UserServiceImpl` |
-| SOAP 方法标签 | `<web:${method}>` | `<web:queryUserById>` |
-| 调用链方法 | `${ServiceImpl}.${method}()` | `UserServiceImpl.queryUserById()` |
-
-**文件内容验证：**
-
-生成每个文件后，必须检查：
-1. **文件名**包含项目前缀（如 `myproject_trace_`）
-2. **文件内容**中不包含任何 `${...}` 形式的未替换变量
-3. **方法名**在报告标题、数据包、调用链中都正确显示
-
-### 2.5 简化版必须包含内容（强制）
-
-| 必须包含 | 说明 | 不可省略 |
-|:---------|:-----|:---------|
-| HTTP/SOAP 请求模板 | 占位符格式 `{{param}}`，用于说明结构 | ✅ |
-| **测试用数据包示例** | **包含实际测试值的完整数据包，可直接用于Burp测试** | ✅ |
-| **该方法特有的参数定义表** | 从该方法代码签名读取，不可假设 | ✅ |
-| 调用链层级图 | [L1] → [L2] → [Sink] 格式 | ✅ |
-| **Sink 识别** | 识别该方法的最终使用点类型 | ✅ |
-| **可控性判定结论** | 该方法参数的可控性判定 | ✅ |
-
-### 2.5.1 测试数据包生成规则（强制）
-
-**测试数据包必须包含实际可测试的值，禁止使用占位符：**
-
-| Java类型 | 占位符（禁止） | 实际值生成规则 |
-|:---------|:---------------|:---------------|
-| String (ID类) | `{{userId}}` | 数字字符串如 `1001` |
-| String (名称类) | `{{name}}` | 有意义的测试值如 `testUser` |
-| String (日期类) | `{{date}}` | 标准格式如 `2026-01-01` |
-| String (路径类) | `{{path}}` | 合法路径如 `/tmp/test.txt` |
-| String (URL类) | `{{url}}` | 完整URL如 `http://example.com/api` |
-| int/Integer | `{{count}}` | 数字如 `10` |
-| boolean/Boolean | `{{flag}}` | `true` 或 `false` |
-| JSON字符串 | `{{xxxJson}}` | 完整JSON如 `{"id":"1","name":"test"}` |
-
-**生成测试值的方法：**
-
-1. **从代码中提取** - 查找代码注释、单元测试、示例数据中的值
-2. **从字段语义推断** - 根据字段名含义生成合理值（如 `email` → `test@example.com`）
-3. **从类型推断** - String用描述性文本，数字用合理范围值
-4. **使用通用安全测试值** - 避免特殊字符，确保请求可正常发送
+- 每条被分配路由或入口都有报告；多方法入口必须有索引。
+- 入口定位有证据：来自 route mapper、配置、注解、web.xml、struts.xml、JAX-RS、WebService endpoint 或用户指定方法。
+- HTTP 请求模板、参数结构、入口类方法、调用层级、变量名变化、关键代码位置完整。
+- sink 类型、sink 位置、参数到达关系、可控性结论和分支条件清楚。
+- pipeline 输入中带有鉴权状态时，报告必须原样透传；未提供时明确写“未提供”，不得自行鉴权。
+- 不把“参数到达危险 sink”写成“漏洞已确认”；漏洞结论交给下游专项 skill。
+- 参数化 SQL、Hibernate Criteria、MyBatis `#{}` 仍应记录为 SQL sink 或 SQL 相关 sink，并把参数化写成 Guard/限制；不得写“无敏感 sink”或“风险极低”替代证据。
+- 不得写“注入不成立”“漏洞不存在”“无风险”等专项结论；只能写“观察到参数化绑定/白名单/校验等限制，交下游专项判断”。
+- 不扩大到认证策略、口令策略、传输安全、组件版本、部署基线等非调用链发现；非调用链安全基线不得出现在正式报告中，也不要为了说明“不属于本范围”而列出具体认证/配置产品词或策略名。
+- 不扩展到当前入口调用链之外的同类方法、同一个持久化组件的其他方法或相邻接口；发现旁路候选时只写“超出本次入口范围，未分析”。
+- 对 Hibernate/JPA Criteria、ORM API 或 Mapper 方法，只能引用实际读到的 API 调用、Mapper XML 或 SQL 字符串；没有看到生成后的 SQL 时，不得补写等价 SQL、表名、列名或 `SELECT` 语句。
+- 下游交接只围绕当前链路命中的 sink；没有上游鉴权证据或用户点名时，不把认证、口令、传输、网关或部署基线写入 `java-auth-audit` 交接。
+- 输出文件不含 `【填写】`、`${...}`、`...` 省略占位、`同上`、输出自检、测试提示词、内部规则名称或臆造代码位置。
+- 如果只追到 Manager/Service/DAO 接口调用，但实现类源码或反编译结果缺失，不得把该调用推断成 SQL/FILE/XML 等 sink；只能标记为 `UNCONFIRMED` 并列入“仍需确认”。
+- 报告只包含模板定义的业务章节；不得添加输出自检、模型验收、技能源校验、测试过程说明、内部规则名、规则编号或“按 skill 规则”这类内部过程表述。
+- 面向用户的最终对话回复最多两行：报告路径或索引路径 + `调用链追踪报告已生成，详见报告。`；不得输出验证通过、QA 摘要、漏洞摘要或关键发现列表。
 
-### 2.6 方法参数独立检查规则（强制）
+## 输入与模式判断
 
-**在追踪每个方法时，必须执行以下步骤，禁止跳过：**
-
-#### 步骤1：读取该方法的实际代码签名
+先判断执行模式：
 
-必须读取实际代码获取真实参数，禁止假设：
-
-```
-方法A: getDictionaryAll(String codeTypes)           → 1个参数
-方法B: getCommonQuery(String searchJson, ...)       → 3个参数
-方法C: executeCommand(String cmd, String args)      → 2个参数
-```
+| 模式 | 触发条件 | 输出责任 |
+|------|----------|----------|
+| Standalone single-route | 用户指定一个路由或入口方法 | 为该路由生成单方法报告，必要时生成多方法索引 |
+| Standalone batch | 用户给出多个路由、route mapper 文件或清单 | 逐条生成报告，最后写批次覆盖摘要 |
+| Pipeline worker | prompt 中出现 `agent-5-N`、`trace_batch_plan`、`batch_id`、已创建输出目录 | 只处理本批次路由，只写指定 `route_tracer/` 子目录 |
+| Evidence refresh | 用户要求复查某个旧报告 | 读取旧报告与源码，更新该路由报告并标注变化 |
 
-#### 步骤2：独立追踪该方法的调用链到 Sink
+如果缺少源码路径、输出目录或入口定位信息，且无法从当前仓库或 route mapper 输出推导，先停止并要求补齐。不要自行扩大到全项目扫描；不要为了“找几个例子”枚举整个项目。
 
-不同方法可能有不同的 Sink 类型：
+## 工作流
 
-| 方法示例 | 调用链 | Sink 类型 |
-|:---------|:-------|:----------|
-| getCommonQuery | → DAO → SQL执行 | SQL |
-| executeTask | → Runtime.exec() | COMMAND |
-| fetchUrl | → HttpClient.get() | HTTP |
-| parseXml | → DocumentBuilder.parse() | XML |
-| getDictionaryAll | → Map.get() | 无敏感Sink |
+1. 确认模式、源码路径、输出根目录、分配路由清单和是否存在 route mapper 输出。
+2. 优先读取 route mapper 主索引和模块详情；没有时按实际框架配置定位入口，必须标注覆盖限制。
+3. 识别入口真实方法。多方法或动态入口按 `references/multi-method-tracing.md` 处理。
+4. 从入口开始逐层追踪参数传递、变量改名、DTO/JSON/XML 映射、封装方法、继承和接口实现。
+5. 标记 sink 类型与位置。sink 类型和可控性判定按 `references/CONTROLLABILITY_ANALYSIS.md`。
+6. 分析参数覆盖、校验、白名单、黑名单、规范化、提前返回和异常路径。
+7. 分支条件按 `references/BRANCH_TRACING.md` 输出到报告。
+8. 按模板写入报告和索引文件；可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_route_tracer_output.py <输出目录>` 做格式和边界检查，检查结果只用于内部修正，不写入报告。
 
-#### 步骤3：判定该方法参数的可控性
+## 按需读取的 references
 
-根据该方法实际追踪到的 Sink 类型进行判定：
+- 多入口和多方法展开：`references/multi-method-tracing.md`
+- 参数可控性、sink 分类：`references/CONTROLLABILITY_ANALYSIS.md`
+- 分支和提前退出：`references/BRANCH_TRACING.md`
+- 完整报告模板：`references/OUTPUT_TEMPLATE_FULL.md`
+- 简化报告模板：`references/OUTPUT_TEMPLATE_SIMPLE.md`
+- 多方法索引模板：`references/OUTPUT_TEMPLATE_INDEX.md`
+- 输出边界检查：`tools/skill-maintenance/validators/validate_route_tracer_output.py`
+- 需要反编译：`../java-shared/DECOMPILE_STRATEGY.md`
 
-| Sink 类型 | 判定要点 |
-|:----------|:---------|
-| SQL | 参数是否拼接到 SQL |
-| COMMAND | 参数是否传递到命令执行 |
-| HTTP | 参数是否用于构造 URL |
-| FILE | 参数是否用于文件路径 |
-| XML | 参数是否传递到 XML 解析器 |
-| 无敏感Sink | 标注"无敏感操作" |
-
-#### 步骤4：输出该方法的独立判定结果
-
-**禁止行为：**
-- ❌ 禁止写"参考第1个接口的参数定义"
-- ❌ 禁止复用其他方法的可控性结论
-- ❌ 禁止假设所有方法都有相同的参数或 Sink 类型
-
-### 2.7 简化版生成前检查清单（每个方法必须执行）
-
-| # | 检查项 | 必须执行 |
-|:--|:-------|:---------|
-| 1 | 读取该方法的代码签名，获取实际参数列表 | ☐ |
-| 2 | 追踪该方法的调用链到最终使用点 | ☐ |
-| 3 | 识别该方法的 Sink 类型（SQL/COMMAND/HTTP/FILE/XML/无） | ☐ |
-| 4 | 判定该方法参数的可控性 | ☐ |
-| 5 | 输出该方法的可控性判定表 | ☐ |
-
-### 3. 追踪调用链
-
-从入口方法开始，逐层追踪：
-
-```
-Controller/Action 层
-    ↓ 调用
-Service/Manager 层
-    ↓ 调用
-DAO/Repository 层
-    ↓ 执行
-SQL/数据库操作
-```
+## 强制规则
 
-**追踪规则：**
+### 1. 只给证据，不替专项 skill 下结论
 
-1. **识别方法调用** - 检查方法体中的 `this.xxx()` 或注入对象的方法调用
-2. **跟踪依赖注入** - 识别 `@Autowired`、`@Resource`、构造器注入的对象
-3. **追踪父类方法** - 如果调用 `super.xxx()` 或继承方法，追踪到父类
-4. **记录参数传递** - 记录参数如何从上层传递到下层
+允许写：
 
-### 4. 反编译支持
+- “`requestDto.sortField` 到达 `QueryBuilder.appendOrderBy` 的 SQL 相关 sink。”
+- “参数在非空时完全可控；为空时被默认值覆盖。”
+- “该路径需要满足 `status == enabled` 分支。”
 
-当源码不可用时，使用 CFR 反编译器（详见 `java-shared/DECOMPILE_STRATEGY.md`）：
+禁止写：
 
-```bash
-# 反编译单个文件
-java -jar {CFR_JAR} /path/to/SomeClass.class --outputdir {output_path}/decompiled
-
-# 反编译目录
-find /path/to/classes -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
+- “确认 SQL 注入高危漏洞。”
+- “可直接打穿。”
+- “已完成漏洞验证。”
+- 没有下游专项审计支持的复现请求、攻击字符串或修复版本。
 
-# 批量反编译
-java -jar {CFR_JAR} /path/to/A.class /path/to/B.class --outputdir {output_path}/decompiled
-```
+### 2. 入口必须真实可达
 
----
+每条调用链都必须先绑定真实入口：
 
-## 输出格式
+- Spring MVC: 类级和方法级 mapping 组合。
+- Struts2: package namespace、action name、method、通配符实例。
+- Servlet: web.xml 或 `@WebServlet` 的 url-pattern 与 `doGet`/`doPost` 等方法。
+- JAX-RS: `ApplicationPath`、类级和方法级 `@Path`、HTTP 方法注解。
+- WebService: 配置或注解暴露的 endpoint address 与 operation。
 
-**严格按照 references/ 目录中的填充式模板生成输出文件。**
+找不到入口时，报告为“入口未定位”，不要把内部 helper 方法写成 Web 路由。
 
-| 场景 | 模板 | 文件命名 |
-|------|------|---------|
-| 第 1 个接口（完整版） | [OUTPUT_TEMPLATE_FULL.md](references/OUTPUT_TEMPLATE_FULL.md) | `{project_name}_trace_{method_name}_{YYYYMMDD_HHMMSS}.md` |
-| 第 2+ 个接口（简化版） | [OUTPUT_TEMPLATE_SIMPLE.md](references/OUTPUT_TEMPLATE_SIMPLE.md) | `{project_name}_trace_{method_name}_{YYYYMMDD_HHMMSS}.md` |
-| 多方法索引 | [OUTPUT_TEMPLATE_INDEX.md](references/OUTPUT_TEMPLATE_INDEX.md) | `{project_name}_trace_all_methods_{YYYYMMDD_HHMMSS}.md` |
+### 3. 调用链不能跳层
 
-**关键规则：**
-- 所有【填写】占位符必须替换为实际内容
-- 每个方法必须独立追踪到 Sink，禁止复用其他方法结论
-- 多方法路由必须生成索引文件
-- 通用规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
+必须记录每一层的文件位置、类名、方法签名、关键调用语句和参数传递关系。接口、抽象类、父类、Mapper XML、工具类、反射分发都要追到真实实现或明确标注无法确认原因。
 
-### 单方法路由
+关键代码片段和表格单元格必须是真实片段、准确摘录或独立说明，不得用 `...`、`省略`、`同上`、`后续代码` 代替。若代码太长，只摘录与参数传递或分支相关的真实语句，并在说明列用自然语言交代上下文。
 
-**文件命名：** `{项目名}_audit/route_tracer/{路由名}/{项目名}_trace_{路由标识}_{时间戳}.md`
+### 4. 可控性必须考虑覆盖和校验
 
-**目录结构：**
-```
-{project_name}_audit/
-└── route_tracer/
-    └── {route_name}/
-        └── {project_name}_trace_{route_id}_20260204.md
-```
+不要只因为参数名出现在 sink 附近就判完全可控。必须检查：
 
-### 多接口方法路由（重要）
+- 是否被硬编码覆盖。
+- 是否被默认值覆盖。
+- 是否只允许白名单值。
+- 是否经过类型转换、路径规范化、SQL 标识符白名单、XML 安全配置等限制。
+- 是否有 return/throw 阻断路径。
 
-**当入口类包含多个业务方法时（如 Web Service、Controller 有多个端点），必须为每个方法生成独立的追踪报告文件。**
+### 5. 鉴权信息只透传
 
-**文件命名规则：**
-- 单个方法报告：`{项目名}_trace_{方法名}_{时间戳}.md`
-- 总索引报告：`{项目名}_trace_all_methods_{时间戳}.md`
+如果上游批次提供鉴权状态、P0/P1/P2 分级或鉴权绕过编号，报告中原样写入并注明来源。若没有上游信息，写“未提供上游鉴权信息”。不得自行判断无鉴权、越权或绕过。
 
-**目录结构：**
-```
-{project_name}_audit/
-└── route_tracer/
-    └── {route_name}/
-        ├── {project_name}_trace_getBasicQuery_20260204.md        # 方法1
-        ├── {project_name}_trace_getAdvancedQuery_20260204.md     # 方法2
-        ├── {project_name}_trace_getDetailQuery_20260204.md       # 方法3
-        ├── {project_name}_trace_getImageQuery_20260204.md        # 方法N
-        ├── ... (每个方法一个独立文件)
-        └── {project_name}_trace_all_methods_20260204.md           # 总索引
-```
+不要把认证、口令、传输、网关、部署或过滤链基线作为本 skill 的发现；没有上游鉴权证据时只写“未提供上游鉴权信息”，不主动分析 filter chain。正式报告中也不要列出这些基线关键词来解释“为何不分析”；直接省略即可。
 
-**路由名说明：**
-- 路由名从路由路径提取，去掉前缀斜杠和特殊字符
-- 例如：`/biz/ws/userService` → `biz_ws_userService`
-- 例如：`/api/user/login.action` → `api_user_login`
+如果在定位入口时顺手看到认证/过滤配置，只用于确认入口映射是否真实存在；不要评价其安全含义，不要写入“已确认事实”“建议下游 skill”或“仍需确认”。
 
-**执行流程：**
+### 6. Pipeline worker 隔离
 
-```
-正在扫描入口类: UserQueryServiceImpl
+在 `agent-5-N` 模式下：
 
-✅ 发现 10 个入口方法
+- 只处理批次清单中的路由。
+- 只写负责人指定的 `route_tracer/{route_slug}/` 或批次输出目录。
+- 可只读访问 route mapper、auth audit、cross analysis 和源码。
+- 不修改 route mapper、auth audit、vuln report、专项漏洞报告或其他 worker 目录。
+- 发现批次输入无法定位时，写失败原因和未完成清单，不自行替换路由。
 
---- 方法 1/10: getBasicQuery ---
-[生成独立报告: myproject_trace_getBasicQuery_20260204.md]
+### 7. 范围上限
 
---- 方法 2/10: getAdvancedQuery ---
-[生成独立报告: myproject_trace_getAdvancedQuery_20260204.md]
+- Standalone 模式一次最多处理用户明确点名的一个路由/入口；用户给出少量清单时才批量处理。
+- 用户只给项目路径、模块名或“可定位入口”时，不要自动枚举所有 Struts Action、WebService operation 或 REST 方法。
+- 需要全量覆盖时，先交给 `java-route-mapper` 生成清单，再由 pipeline 或用户提供批次。
+- 如果发现本次任务会生成大量报告或超过上下文窗口，停止并写清需要拆分的批次，不继续写半成品。
+- 不要因为读到同一个 DAO/Manager 类中的其他方法，就把它们写入当前入口的下游交接；除非它们在当前调用链中真实可达。
 
-...
+### 8. 反编译最小化
 
-✅ 所有 10 个方法追踪完成
-✅ 生成总索引: myproject_trace_all_methods_20260204.md
-```
+源码完整时优先读源码。只有入口、实现类、Mapper、工具方法或 sink 位于 class/JAR 且源码不可读时，才按共享反编译策略最小化反编译相关类。报告中必须标注反编译来源和限制。
 
-**总索引报告内容：**
-```markdown
-# /api/ws/userQuery Web Service 所有方法追踪索引
+### 9. Sink 必须有代码证据
 
-生成时间: 2026-02-04
-入口类: UserQueryServiceImpl
-方法总数: 10
+只有看到真实危险 API、Mapper XML、注解 SQL、框架调用或反编译代码时，才能写具体 sink 类型：
 
-## 方法清单
+- 看到 `Statement.execute`、MyBatis `${}`、HQL/native SQL 拼接，才能写 `SQL`。
+- 看到 Hibernate Criteria、JPA Criteria、`PreparedStatement`、MyBatis `#{}` 等参数化查询时，也写 `SQL`，并在 Guard/限制说明中标注参数化绑定。
+- 看到 `Files.read*`、`FileInputStream`、`transferTo`、`FileItem.write`，才能写文件类 sink。
+- 看到 XML parser、反序列化 API、命令执行、HTTP client、LDAP、表达式执行等真实调用，才能写对应 sink。
 
-| # | 方法名 | 参数列表 | 详细报告 |
-|:--|:-------|:---------|:---------|
-| 1 | getBasicQuery | searchJson, pageJson, extend | [查看](myproject_trace_getBasicQuery_20260204.md) |
-| 2 | getAdvancedQuery | searchJson, pageJson, extend | [查看](myproject_trace_getAdvancedQuery_20260204.md) |
-| 3 | getDetailQuery | searchJson, pageJson, extend | [查看](myproject_trace_getDetailQuery_20260204.md) |
-| ... | ... | ... | ... |
-```
+以下情况不得推断为具体 sink：
 
-详细实现策略请参考：[multi-method-tracing.md](references/multi-method-tracing.md)
+- `SomeManager.someBusinessMethod(inputParam)` 这类接口/Manager/DAO 方法名。
+- `save()`、`add()`、`query()`、`delete()` 等业务语义方法。
+- 类名包含 `Dao`、`ManagerImpl`、`Repository`。
+- 只有 `.class` 文件但未反编译或未读到方法体。
 
-### 输出模板
+这类情况在报告中写 `UNCONFIRMED` 或“下游候选调用”，并说明需要反编译/补源码确认；不要写 `SQL SELECT`、`SQL INSERT`、`Hibernate session.save` 等未经证实的细节。
 
-#### 完整追踪链（适用于第 1 个接口）
+### 10. Skill 文档示例必须可迁移
 
-完整的调用链追踪报告，包含所有层级、分支、变量追踪等内容。
+SKILL.md 和 references 中的示例只使用泛化类名、方法名、参数名和路径，不引用某次测试源码中的真实业务类、真实变量、真实接口名或真实行号。真实项目名称、类名、方法名、变量名和路径只允许出现在该项目的审计输出中，作为证据给下游或开发单位复核。
 
-````markdown
-# 路由调用链追踪报告
+## Gotchas
 
-**追踪路由**: `/admin/image/getImageCapture.action`
-**生成时间**: 2026-02-04
-**项目路径**: /path/to/project
+- Controller 方法同名重载时，必须依据 mapping、HTTP 方法和参数绑定选择真实入口。
+- Spring 接口注解和实现类注解可能拆开；只看实现类会漏 route。
+- Struts2 通配符和 `method:` 动态方法不能把所有 public 方法都算入口，必须由配置和 URL 实例证明。
+- Servlet 覆盖 `service()` 时，`doGet`/`doPost` 可能不被调用。
+- WebService 实现类 public helper 很多，但只有接口、注解或 WSDL 暴露的方法才是 operation。
+- 参数常在 JSON 字符串、DTO setter、BeanUtils、Map、ThreadLocal、父类字段中改名。
+- `StringUtils.defaultIfBlank`、空值默认值和无条件赋值会改变可控性。
+- `PreparedStatement`、MyBatis `#{}`、路径 canonical 校验、XML 禁用外部实体等是下游判定的重要限制，不能在追踪报告里省略。
+- Mapper XML、注解 SQL、HQL/JPQL、文件工具类、XML 工具类、反序列化封装方法经常是 sink 真实位置。
+- “无敏感 sink”也是有效结论，但必须说明扫描到哪里以及为什么认为未到达 sink。
+- Manager/DAO 方法名不是 sink 证据；看不到实现时，宁可写 `UNCONFIRMED`，不要猜 SQL/Hibernate。
+- 请求模板中不要使用 `${param}` 变量格式；模板占位只允许 `{{param}}`，安全样例请求必须填入实际低风险值。
+- 报告不要写模型自检、检查清单、测试验收信息、内部规则名称或“按 skill 规则”；这些内容只属于本地验收记录。
 
----
+## 停止、确认或切换条件
 
-## 1. HTTP 请求数据包
+- 缺少源码路径且当前环境无法访问时，停止询问。
+- 用户只给项目路径但要求全量路由调用链，先切换到 `java-route-mapper` 或要求提供 route mapper 输出。
+- 用户只要求“选择可定位入口追踪”但未指定入口时，停止并要求具体路由、入口方法或批次；不要自行全量展开。
+- 用户要求漏洞判定、风险评级、复现材料或修复建议时，先完成必要调用链证据，再切换到对应专项 skill。
+- 批次路由数量明显超出单 worker 可完成范围时，记录待拆分建议，等待负责人重新分批。
+- 入口定位和源码实现冲突时，以源码和部署配置为准，并在报告中说明 route mapper 可能过期。
 
-### 1.1 完整请求模板
+## Evals
 
-```http
-POST /admin/image/getImageCapture.action HTTP/1.1
-Host: {{host}}
-Content-Type: application/x-www-form-urlencoded
-Cookie: JSESSIONID={{session}}
+### 正例：应触发
 
-searchJson={{searchJson}}&pageJson={{pageJson}}&extend={{extend}}
-```
+| 用户输入 | 预期 | 理由 |
+|----------|------|------|
+| “追踪 `/api/example/list` 的 `sortField` 到 DAO 的调用链。” | 触发 | 明确路由参数流向 |
+| “对 trace_batch_plan 的 P0 路由生成 route_tracer 报告。” | 触发 | pipeline worker 场景 |
+| “这个 SOAP operation 的 `searchJson` 最后有没有进入 SQL 拼接？” | 触发 | WebService operation 参数追踪 |
+| “只输出可控性和分支条件，不做漏洞结论。” | 触发 | 调用链证据层职责 |
 
-### 1.2 参数详细定义
+### 反例：不应触发
 
-#### 顶层参数
+| 用户输入 | 预期 | 理由 |
+|----------|------|------|
+| “提取项目所有接口和参数。” | 不触发 | route mapper 职责 |
+| “判断这个接口是否 SQL 注入。” | 不直接触发 | 应由 SQL audit 下结论 |
+| “检查 Shiro 配置有没有绕过。” | 不触发 | auth audit 职责 |
+| “pom 里有没有 Log4j 组件风险？” | 不触发 | vuln scanner 职责 |
 
-| 参数名 | Java类型 | HTTP位置 | 必填 | 说明 |
-|:-------|:---------|:---------|:-----|:-----|
-| searchJson | String | Body | 是 | JSON格式，反序列化为 ImageCaptureBean |
-| pageJson | String | Body | 是 | JSON格式，反序列化为 Page<ImageCapture> |
-| extend | String | Body | 否 | 扩展参数 |
+### 边界例
 
-#### pageJson 内部结构 (Page<ImageCapture>)
+| 用户输入 | 预期 | 处理 |
+|----------|------|------|
+| “这个内部 `SomeService.queryByCondition` 会不会被用户控制？” | 视上下文触发 | 若能绑定 Web 入口则追踪；否则标注非 Web 入口限制 |
+| “先看 `/download` 的文件路径流向，再判断任意文件读取。” | 触发本 skill 后切换 | 本 skill输出证据，文件读取 skill 判漏洞 |
+| “所有 WebService 方法都追踪一下。” | 触发 | 只追踪真实暴露 operation，生成索引 |
 
-| 字段名 | Java类型 | 说明 | 最终使用位置 |
-|:-------|:---------|:-----|:-------------|
-| orderBy | String | 排序字段 | **AbstractDao.findSql():234 - SQL拼接** |
-| order | String | 排序方向 (asc/desc) | **AbstractDao.findSql():234 - SQL拼接** |
-| pageSize | int | 每页条数 | 分页查询 |
-| currentPage | int | 当前页码 | 分页查询 |
+### 失败案例
 
-#### searchJson 内部结构 (ImageCaptureBean)
-
-| 字段名 | Java类型 | 说明 |
-|:-------|:---------|:-----|
-| userBean | UserBean | 用户信息对象 |
-| startTime | String | 开始时间 |
-| endTime | String | 结束时间 |
-| deviceIds | List<String> | 设备ID列表 |
-
-### 1.3 测试用数据包示例
-
-```http
-POST /admin/image/getImageCapture.action HTTP/1.1
-Host: 192.168.1.100:8080
-Content-Type: application/x-www-form-urlencoded
-Cookie: JSESSIONID=ABC123
-
-searchJson={"userBean":{"loginName":"admin"},"startTime":"2026-01-01","endTime":"2026-02-01"}&pageJson={"orderBy":"id","order":"desc","pageSize":10,"currentPage":1}&extend=
-```
-
----
-
-## 2. 调用链层级追踪
-
-### [Level 1] Action 入口层
-
-**文件**: `com/example/web/action/ImageCaptureAction.java:125`
-**类名**: `ImageCaptureAction`
-**方法签名**:
-```java
-public String getImageCapture(String searchJson, String pageJson, String extend)
-```
-
-**完整代码:**
-```java
-public String getImageCapture(String searchJson, String pageJson, String extend) {
-    // pageJson 反序列化为 Page 对象
-    Page<ImageCapture> page = (Page)JsonUtils.fromJson(pageJson, (new TypeToken<Page<ImageCapture>>() {
-    }).getType(), (String)null);
-
-    this.defaultImageCaptureSearchOrder(page);
-
-    // searchJson 反序列化为 ImageCaptureBean 对象
-    ImageCaptureBean searchBean = (ImageCaptureBean)JsonUtils.fromJson(searchJson, ImageCaptureBean.class, (String)null);
-
-    if (searchBean.getUserBean() != null && StringUtil.isEmpty(searchBean.getUserBean().getHostLoginIp())) {
-        String addressIp = WebServiceUtil.getWebServiceIp();
-        if (StringUtil.isEmpty(addressIp)) {
-            addressIp = searchBean.getUserBean().getLoginServerName();
-        }
-        searchBean.getUserBean().setHostLoginIp(addressIp);
-    }
-
-    searchBean.setSecordExcute(false);
-    String json = WebServiceUtil.valiatePam((new TypeToken<ReturnMsgBean<ImageCapture>>() {
-    }).getType(), new Object[]{page, searchBean});
-
-    if (json == null) {
-        // 关键调用: 传递 searchBean, page, extend 到 Manager 层
-        json = this.imageCaptureManager.getImageCaptureJson(searchBean, page, extend);
-    }
-
-    return json;
-}
-```
-
-**参数转换:**
-
-| HTTP参数 | 转换后类型 | 转换后变量名 | 传递到下一层 |
-|:---------|:-----------|:-------------|:-------------|
-| pageJson (String) | Page<ImageCapture> | page | ✅ |
-| searchJson (String) | ImageCaptureBean | searchBean | ✅ |
-| extend (String) | String | extend | ✅ |
-
-**Page对象关键字段:**
-- `page.orderBy` ← pageJson.orderBy (String类型)
-- `page.order` ← pageJson.order (String类型)
-
-**下一层调用**: `this.imageCaptureManager.getImageCaptureJson(searchBean, page, extend)`
-
----
-
-### [Level 2] Manager 服务层
-
-**文件**: `com/example/service/ImageCaptureManager.java:89`
-**类名**: `ImageCaptureManager`
-**方法签名**:
-```java
-public String getImageCaptureJson(ImageCaptureBean searchBean, Page<ImageCapture> page, String extend)
-```
-
-**完整代码:**
-```java
-public String getImageCaptureJson(ImageCaptureBean searchBean, Page<ImageCapture> page, String extend) {
-    // 关键调用: 将 page 传递给 DAO 层
-    Page<ImageCapture> result = this.imageCaptureDao.getImageCapturePage(searchBean, page);
-    return JsonUtils.toJson(result);
-}
-```
-
-**参数传递:**
-
-| 接收参数 | 类型 | 传递到下一层 |
-|:---------|:-----|:-------------|
-| searchBean | ImageCaptureBean | ✅ |
-| page | Page<ImageCapture> | ✅ (含 orderBy, order) |
-| extend | String | ❌ (未传递) |
-
-**下一层调用**: `this.imageCaptureDao.getImageCapturePage(searchBean, page)`
-
----
-
-### [Level 3] DAO 数据访问层
-
-**文件**: `com/example/dao/ImageCaptureDao.java:56`
-**类名**: `ImageCaptureDao`
-**父类**: `AbstractDao<ImageCapture>`
-**方法签名**:
-```java
-public Page<ImageCapture> getImageCapturePage(ImageCaptureBean searchBean, Page<ImageCapture> page)
-```
-
-**完整代码:**
-```java
-public Page<ImageCapture> getImageCapturePage(ImageCaptureBean searchBean, Page<ImageCapture> page) {
-    String sql = buildQuerySql(searchBean);
-    // 关键调用: 调用父类 AbstractDao.findSql()，传入 page 对象
-    return super.findSql(sql, page);
-}
-```
-
-**参数传递:**
-
-| 接收参数 | 类型 | 传递到下一层 |
-|:---------|:-----|:-------------|
-| searchBean | ImageCaptureBean | ❌ (用于构建SQL) |
-| page | Page<ImageCapture> | ✅ (传递给父类) |
-
-**下一层调用**: `super.findSql(sql, page)` → 父类 `AbstractDao.findSql()`
-
----
-
-### [Level 4] 父类基础层 (最终使用点)
-
-**文件**: `com/example/dao/base/AbstractDao.java:234`
-**类名**: `AbstractDao<T>`
-**方法签名**:
-```java
-protected Page<T> findSql(String sql, Page<T> page)
-```
-
-**完整代码:**
-```java
-protected Page<T> findSql(String sql, Page<T> page) {
-    if (page.getOrderBy() != null) {
-        // ⚠️ 最终使用点: orderBy 和 order 直接拼接到 SQL 语句
-        sql = sql + " ORDER BY " + page.getOrderBy() + " " + page.getOrder();
-    }
-    // 执行 SQL 查询
-    return executeQuery(sql, page);
-}
-```
-
-**参数最终使用:**
-
-| 参数 | 类型 | 使用方式 | 代码位置 |
-|:-----|:-----|:---------|:---------|
-| page.getOrderBy() | String | **直接拼接到 SQL** | AbstractDao.java:235 |
-| page.getOrder() | String | **直接拼接到 SQL** | AbstractDao.java:235 |
-
----
-
-## 3. 调用链总结图
-
-```
-HTTP Request
-│
-├─ searchJson (String) ──→ ImageCaptureBean searchBean
-│                              └─ userBean: UserBean
-│                              └─ startTime: String
-│                              └─ endTime: String
-│
-├─ pageJson (String) ────→ Page<ImageCapture> page
-│                              ├─ orderBy: String ─────────────────────┐
-│                              ├─ order: String ───────────────────────┤
-│                              ├─ pageSize: int                        │
-│                              └─ currentPage: int                     │
-│                                                                      │
-└─ extend (String) ──────→ (未向下传递)                                │
-                                                                       │
-┌──────────────────────────────────────────────────────────────────────┘
-│
-▼ 参数流向追踪
-
-[L1] ImageCaptureAction.getImageCapture()
-      │
-      │  page (含 orderBy, order), searchBean
-      ▼
-[L2] ImageCaptureManager.getImageCaptureJson()
-      │
-      │  page (含 orderBy, order), searchBean
-      ▼
-[L3] ImageCaptureDao.getImageCapturePage()
-      │
-      │  page (含 orderBy, order)
-      ▼
-[L4] AbstractDao.findSql()
-      │
-      └──→ sql = sql + " ORDER BY " + page.getOrderBy() + " " + page.getOrder()
-           ▲                              ▲
-           │                              │
-           └── orderBy 直接拼接 ──────────┴── order 直接拼接
-```
-
----
-
-## 4. 参数变量名追踪表（核心）
-
-**追踪同一参数在不同类中的变量名变化：**
-
-### 4.1 pageJson.orderBy 参数追踪
-
-| 层级 | 类名 | 变量名 | 类型 | 代码位置 | 说明 |
-|:-----|:-----|:-------|:-----|:---------|:-----|
-| HTTP | - | `pageJson` | String | 请求Body | 原始JSON字符串 |
-| L1 | ImageCaptureAction | `pageJson` → `page.orderBy` | Page.orderBy: String | :125 | JsonUtils.fromJson()反序列化 |
-| L2 | ImageCaptureManager | `page.orderBy` | Page.orderBy: String | :89 | 参数名不变，直接传递 |
-| L3 | ImageCaptureDao | `page.orderBy` | Page.orderBy: String | :56 | 参数名不变，传递给父类 |
-| L4 | AbstractDao | `page.getOrderBy()` | String | :235 | **最终使用: SQL拼接** |
-
-### 4.2 pageJson.order 参数追踪
-
-| 层级 | 类名 | 变量名 | 类型 | 代码位置 | 说明 |
-|:-----|:-----|:-------|:-----|:---------|:-----|
-| HTTP | - | `pageJson` | String | 请求Body | 原始JSON字符串 |
-| L1 | ImageCaptureAction | `pageJson` → `page.order` | Page.order: String | :125 | JsonUtils.fromJson()反序列化 |
-| L2 | ImageCaptureManager | `page.order` | Page.order: String | :89 | 参数名不变 |
-| L3 | ImageCaptureDao | `page.order` | Page.order: String | :56 | 参数名不变 |
-| L4 | AbstractDao | `page.getOrder()` | String | :235 | **最终使用: SQL拼接** |
-
-### 4.3 searchJson 参数追踪
-
-| 层级 | 类名 | 变量名 | 类型 | 代码位置 | 说明 |
-|:-----|:-----|:-------|:-----|:---------|:-----|
-| HTTP | - | `searchJson` | String | 请求Body | 原始JSON字符串 |
-| L1 | ImageCaptureAction | `searchJson` → `searchBean` | ImageCaptureBean | :128 | JsonUtils.fromJson()反序列化 |
-| L2 | ImageCaptureManager | `searchBean` | ImageCaptureBean | :89 | 参数名不变 |
-| L3 | ImageCaptureDao | `searchBean` | ImageCaptureBean | :56 | **最终使用: buildQuerySql()** |
-
-### 4.4 变量名变化示例（当参数名在不同层改变时）
-
-```
-HTTP: pageJson (String)
-       ↓ JsonUtils.fromJson()
-L1 ImageCaptureAction: page (Page<ImageCapture>)
-       ↓ 方法参数传递
-L2 ImageCaptureManager: page (Page<ImageCapture>)  ← 同名
-       ↓ 方法参数传递
-L3 ImageCaptureDao: page (Page<ImageCapture>)  ← 同名
-       ↓ super.findSql(sql, page)
-L4 AbstractDao: page (Page<T>)  ← 泛型类型变化
-       ↓ page.getOrderBy()
-最终使用: sql = sql + " ORDER BY " + page.getOrderBy()
-```
-
-### 4.5 完整参数追踪汇总
-
-| 原始HTTP参数 | L1变量名 | L2变量名 | L3变量名 | L4变量名 | 最终使用 |
-|:-------------|:---------|:---------|:---------|:---------|:---------|
-| pageJson | page | page | page | page | page.getOrderBy() → SQL拼接 |
-| pageJson.orderBy | page.orderBy | page.orderBy | page.orderBy | page.getOrderBy() | SQL ORDER BY 子句 |
-| pageJson.order | page.order | page.order | page.order | page.getOrder() | SQL ORDER BY 子句 |
-| searchJson | searchBean | searchBean | searchBean | - | buildQuerySql() |
-| extend | extend | - | - | - | 未向下传递 |
-````
-
----
-
-## 5. 参数实际使用检查（CRITICAL - 防止漏洞误判）
-
-**追踪每个参数从 HTTP 入口到最终使用点，判定参数是否真正参与敏感操作。**
-
-**此检查对于准确判定漏洞至关重要，可避免将"参数传递但未使用"的情况误判为漏洞。**
-
-### 5.1 检查说明
-
-| 状态 | 含义 | 对漏洞判定的作用 |
-|:-----|:-----|:-----------------|
-| ✅ 被使用 | 参数值直接或间接参与敏感操作 | 必须进一步检测是否存在漏洞 |
-| ❌ 未使用 | 参数被传递但未参与敏感操作（被硬编码覆盖/被忽略） | **排除漏洞** |
-| ⚠️ 部分使用 | 参数的部分字段被使用，部分未使用 | 仅检测被使用的字段 |
-
-### 5.2 各漏洞类型的"硬编码覆盖"场景
-
-| 漏洞类型 | 参数 | 硬编码覆盖场景 | 结论 |
-|:---------|:-----|:---------------|:-----|
-| **SQL 注入** | `page.orderBy` | SQL 已硬编码 `order by createTime desc` | 参数未使用 |
-| **命令注入** | `cmd` | 代码硬编码 `Runtime.exec("ls -la")` | 参数未使用 |
-| **SSRF** | `url` | 代码硬编码 `httpClient.get("http://internal/api")` | 参数未使用 |
-| **文件操作** | `path` | 代码硬编码 `new File("/tmp/fixed.txt")` | 参数未使用 |
-| **XXE** | `xml` | 代码使用固定 XML 模板 | 参数未使用 |
-| **表达式注入** | `expr` | 代码硬编码表达式 `SpEL.parse("#{fixed}")` | 参数未使用 |
-
-### 5.3 参数使用检查表（输出模板）
-
-```markdown
-## 参数实际使用检查
-
-| 参数 | Sink类型 | 覆盖类型 | 覆盖条件 | 可控性结论 | 可控场景 |
-|:-----|:---------|:---------|:---------|:-----------|:---------|
-| page.orderBy | SQL ORDER BY | 条件覆盖 | `isEmpty(orderBy)` | ⚠️ 条件可控 | 非空时可控 |
-| page.order | SQL ORDER BY | 无覆盖 | - | ✅ 完全可控 | 任意值 |
-| cmd | Runtime.exec | 无覆盖 | - | ✅ 完全可控 | 任意值 |
-| url | HTTP请求 | 安全检查覆盖 | `!isInternalUrl(url)` | ⚠️ 条件可控 | 外网URL时可控 |
-| path | File操作 | 白名单覆盖 | `!allowedPaths.contains()` | ⚠️ 白名单内可控 | /tmp, /data 等 |
-| searchBean.keyword | SQL WHERE | 无条件覆盖 | 总是覆盖 | ❌ 不可控 | 无 |
-```
-
-**可控性结论说明：**
-
-| 结论 | 含义 | 审计要求 |
-|:-----|:-----|:---------|
-| ✅ 完全可控 | 参数无任何覆盖，用户输入直接到达 Sink | 必须审计 Sink 点安全性 |
-| ⚠️ 条件可控 | 参数在特定条件下可控 | 需验证绕过条件后审计 |
-| ❌ 不可控 | 参数被无条件覆盖或安全处理 | 可排除该参数的漏洞 |
-
-### 5.4 通用覆盖条件识别规则（适用于所有漏洞类型）
-
-**在追踪到参数赋值操作后，必须检查覆盖条件，此规则适用于任何类型的参数：**
-
-| 覆盖类型 | 代码特征 | 可控性判定 | 适用场景 |
-|:---------|:---------|:-----------|:---------|
-| **无条件覆盖** | `x = "hardcoded";` (不在 if 内) | ❌ 不可控 | 所有漏洞类型 |
-| **空值保护覆盖** | `if (isEmpty(x)) { x = default; }` | ⚠️ 非空时可控 | 所有漏洞类型 |
-| **null保护覆盖** | `if (x == null) { x = default; }` | ⚠️ 非null时可控 | 所有漏洞类型 |
-| **白名单覆盖** | `if (!list.contains(x)) { x = default; }` | ⚠️ 白名单内可控 | 所有漏洞类型 |
-| **安全检查覆盖** | `if (!isAllowed(x)) { x = safe; }` | ⚠️ 绕过检查时可控 | SSRF/文件/命令 |
-| **格式校验覆盖** | `if (!isValid(x)) { x = default; }` | ⚠️ 符合格式时可控 | 所有漏洞类型 |
-| **条件分支覆盖** | `if (cond) { x = default; }` | ⚠️ 条件不满足时可控 | 所有漏洞类型 |
-
-**常见覆盖条件识别（通用）：**
-
-| 条件类型 | 识别模式 | 可控场景 |
-|:---------|:---------|:---------|
-| **空值检查** | `isEmpty()`, `isBlank()`, `== null`, `length() == 0` | 非空时可控 |
-| **白名单检查** | `contains()`, `Arrays.asList()`, `allowedList.contains()` | 白名单内可控 |
-| **黑名单检查** | `!contains()`, `blacklist.contains()` → 拒绝 | 不在黑名单时可控 |
-| **格式校验** | `matches()`, `Pattern.compile()`, `isValid()` | 符合格式时可控 |
-| **安全检查** | `isAllowed()`, `isSafe()`, `checkSecurity()` | 绕过检查时可控 |
-| **范围检查** | `x > min && x < max`, `inRange()` | 范围内可控 |
-
-**原有硬编码覆盖检测规则（仍然适用）：**
-
-| 敏感操作类型 | 硬编码覆盖判断方法 | 示例 |
-|:-------------|:-------------------|:-----|
-| SQL ORDER BY | 检查 SQL 字符串是否已包含 `order by` | `sql + " order by id desc"` |
-| SQL WHERE | 检查条件是否使用参数化 `#{}` 或硬编码值 | `WHERE status = 1` |
-| 命令执行 | 检查命令字符串是否使用硬编码命令 | `exec("ls -la")` |
-| HTTP 请求 | 检查 URL 是否使用硬编码地址 | `get("http://fixed.com")` |
-| 文件操作 | 检查路径是否使用硬编码路径 | `new File("/tmp/log.txt")` |
-| XML 解析 | 检查 XML 是否来自固定模板 | `parse(FIXED_XML)` |
-
-### 5.5 硬编码覆盖详情输出格式
-
-**当发现参数被硬编码覆盖时，必须输出详情：**
-
-```
-### 硬编码覆盖详情
-
-#### {参数名} - 被硬编码覆盖
-
-**代码位置**: `{ClassName}.java:{line}`
-
-**覆盖代码**: {展示硬编码覆盖的代码片段}
-
-**判定**:
-- {参数}被传递到{方法}
-- 但{敏感操作}已经包含硬编码值
-- **结论**: ❌ 参数未使用，不存在漏洞
-```
-
-### 5.6 参数实际使用检查清单
-
-**在输出追踪报告前，必须完成以下检查：**
-
-| # | 检查项 | 状态 |
-|:--|:-------|:-----|
-| 1 | 识别所有传递到最终层的参数 | ☐ |
-| 2 | 确定每个参数的敏感操作类型 | ☐ |
-| 3 | 检查是否存在硬编码覆盖 | ☐ |
-| 4 | 标注每个参数的实际使用状态 | ☐ |
-| 5 | 对"被硬编码覆盖"的参数输出详情 | ☐ |
-| 6 | **检查覆盖条件语义，输出可控性结论** | ☐ |
-
----
-
-## 6. 参数可控性判定（CRITICAL - 通用漏洞判定依据）
-
-**适用于所有漏洞类型：SQL注入、命令注入、SSRF、文件操作、XXE、表达式注入等。**
-
-**详细判定原则请参考：[CONTROLLABILITY_ANALYSIS.md](references/CONTROLLABILITY_ANALYSIS.md)**
-
-### 6.1 核心判定流程
-
-```
-1. 追踪参数从 HTTP 入口到 Sink 的完整路径
-2. 识别路径上所有对参数的赋值/覆盖操作
-3. 检查覆盖操作的条件语义（识别代码意图，非模式匹配）
-4. 输出可控性结论
-```
-
-### 6.2 覆盖类型与可控性
-
-| 覆盖类型 | 判定标准 | 可控性结论 |
-|:---------|:---------|:-----------|
-| **无覆盖** | 参数直接传递到 Sink | ✅ 完全可控 |
-| **无条件覆盖** | 赋值不在任何条件内 | ❌ 不可控 |
-| **条件覆盖** | 赋值在条件内，需判定语义 | ⚠️ 条件可控 |
-
-### 6.3 条件语义判定（关键）
-
-**根据代码语义识别，而非匹配固定方法名：**
-
-| 语义类型 | 判断方法 | 可控场景 |
-|:---------|:---------|:---------|
-| 空值保护 | 条件判断参数是否为空，为空时设默认值 | 非空时可控 |
-| 白名单验证 | 条件判断参数是否在允许列表中 | 白名单内可控 |
-| 安全检查 | 条件判断参数是否安全 | 绕过检查时可控 |
-
-### 6.4 输出格式
-
-**必须输出可控性判定表：**
-
-```markdown
-| 参数 | Sink类型 | 覆盖类型 | 覆盖条件 | 可控性结论 | 可控场景 |
-|:-----|:---------|:---------|:---------|:-----------|:---------|
-| {name} | {sink} | {type} | {condition} | {✅/⚠️/❌} | {scenario} |
-```
-
-**必须输出可控性汇总：**
-
-```markdown
-| 可控性类型 | 参数列表 | 审计要求 |
-|:-----------|:---------|:---------|
-| ✅ 完全可控 | {list} | 必须审计 Sink 安全性 |
-| ⚠️ 条件可控 | {list} | 需验证绕过条件 |
-| ❌ 不可控 | {list} | 可排除漏洞可能 |
-```
-
-### 6.5 Sink 类型
-
-| Sink | 说明 |
-|:-----|:-----|
-| SQL | SQL 拼接/执行 |
-| COMMAND | 系统命令执行 |
-| HTTP | HTTP 请求发起 |
-| FILE | 文件读写操作 |
-| XML | XML 解析 |
-| LDAP | LDAP 查询 |
-| EXPRESSION | 表达式解析 |
-| DESERIALIZE | 反序列化 |
-| RESPONSE | 响应输出 |
-| PATH | 路径拼接 |
-
----
-
-## 7. 分支条件追踪（CRITICAL - 避免漏洞误判）
-
-**追踪调用链时，必须记录所有条件分支，确保识别代码是否真的会执行！**
-
-**详细判定原则请参考：[BRANCH_TRACING.md](references/BRANCH_TRACING.md)**
-
-### 7.1 核心判定流程
-
-```
-1. 识别代码中的条件分支（if/else/switch）
-2. 检查每个分支的执行内容
-3. 判定敏感操作在哪些分支中执行
-4. 输出执行路径结论
-```
-
-### 7.2 必须识别的分支类型
-
-**根据代码语义识别，而非匹配固定方法名：**
-
-| 分支类型 | 语义特征 | 追踪要点 |
-|:---------|:---------|:---------|
-| 环境/平台分支 | 根据运行环境选择不同路径 | 标注各环境执行内容 |
-| 安全检查分支 | 对输入进行安全验证 | 标注拦截条件 |
-| 功能开关分支 | 根据配置决定是否执行 | 标注开关状态影响 |
-| 空值/异常分支 | 检查参数有效性 | 标注提前退出条件 |
-| 权限判断分支 | 检查用户权限 | 标注权限要求 |
-
-### 7.3 提前退出点识别
-
-| 退出类型 | 语义 | 必须标注 |
-|:---------|:-----|:---------|
-| 安全拦截退出 | 安全检查失败，拒绝继续 | ⚠️ 安全拦截 |
-| 空值保护退出 | 参数无效，提前返回 | ⚠️ 提前退出 |
-| 异常抛出退出 | 条件不满足，抛出异常 | ⚠️ 异常退出 |
-
-### 7.4 输出格式
-
-**必须输出分支结构：**
-
-```markdown
-methodName(param)
-    ├─ [if 条件A] → 分支A执行内容
-    │      └─→ 敏感操作 ⚠️
-    └─ [else] → 默认分支 / return / throw
-```
-
-**必须输出执行路径结论：**
-
-```markdown
-| 路径 | 条件 | 敏感操作 | 可利用性 |
-|:-----|:-----|:---------|:---------|
-| 路径A | {条件} | ✅ 执行 | 可利用 |
-| 路径B | {条件} | ❌ 不执行 | 不可利用 |
-```
-
----
-
-## 追踪策略
-
-### 策略 1: 依赖注入追踪
-
-识别 Spring/Struts 的依赖注入：
-
-```java
-// Spring
-@Autowired
-private ImageCaptureManager imageCaptureManager;
-
-// Struts
-private ImageCaptureService faceCaptureService;
-public void setImageCaptureService(ImageCaptureService service) {
-    this.faceCaptureService = service;
-}
-```
-
-追踪 `imageCaptureManager.xxx()` 调用时，定位到 `ImageCaptureManager` 类。
-
-### 策略 2: 继承链追踪
-
-当调用 `super.xxx()` 或父类方法时：
-
-```java
-public class ImageCaptureDao extends AbstractDao<ImageCapture> {
-    public Page<ImageCapture> query(Page<ImageCapture> page) {
-        return super.findSql(sql, page);  // 追踪到 AbstractDao
-    }
-}
-```
-
-追踪步骤：
-1. 识别 `extends AbstractDao`
-2. 在父类中查找 `findSql` 方法
-3. 继续追踪父类的父类（如有）
-
-### 策略 3: 接口实现追踪
-
-当调用接口方法时：
-
-```java
-@Autowired
-private UserService userService;  // 接口类型
-
-userService.getUser(id);  // 需要找到实现类
-```
-
-追踪步骤：
-1. 识别 `UserService` 是接口
-2. 查找 `implements UserService` 的类
-3. 定位到实现类的方法
-
-### 策略 4: MyBatis/Hibernate 追踪
-
-对于 ORM 框架：
-
-**MyBatis:**
-```java
-@Mapper
-public interface UserMapper {
-    List<User> selectByPage(@Param("page") Page page);
-}
-```
-追踪到对应的 XML 文件中的 SQL 定义。
-
-**Hibernate:**
-```java
-session.createQuery("FROM User WHERE id = " + id);
-```
-直接在代码中识别 HQL/SQL。
-
----
-
-## 反编译工具使用
-
-### 何时反编译
-
-| 场景 | 操作 |
-|:-----|:-----|
-| .java 源码存在 | 直接读取检查 |
-| 只有 .class 文件 | 使用 decompile_file |
-| 整个项目只有 .class | 使用 decompile_directory |
-| 父类在 JAR 包中 | 先解压 JAR，再 decompile_file |
-
-### 反编译命令参考
-
-```bash
-# 检查 CFR 状态
-java -jar {CFR_JAR} --help
-
-# 检查 Java 版本
-java -version
-
-# 如果 CFR 不存在，下载
-curl -L -o {output_path}/cfr-0.152.jar "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
-
-# 反编译单个类
-java -jar {CFR_JAR} /path/to/AbstractDao.class --outputdir {output_path}/decompiled
-
-# 反编译整个 DAO 包
-find /path/to/com/example/dao -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
-
----
-
-## 输出规范
-
-### 必须包含的信息
-
-每个层级必须包含：
-
-1. **文件位置** - 完整包路径 + 文件名 + 行号
-2. **类名** - 包括父类信息（如有）
-3. **方法签名** - 方法名 + 参数列表 + 返回类型
-4. **关键代码** - 展示调用下一层的代码片段
-5. **参数传递** - 说明参数如何传递到下一层
-
-### 禁止的操作
-
-- ❌ 不进行漏洞检测或漏洞判定
-- ❌ 不提供修复方案
-- ❌ 不推断不存在的调用关系
-- ❌ 不省略任何层级
-
-### 输出文件命名
-
-```
-{project_name}_audit/route_tracer/{route_name}/{project_name}_trace_{route_id}_{timestamp}.md
-
-示例:
-myproject_audit/route_tracer/biz_ws_userService/myproject_trace_queryUserById_20260204.md
-```
-
-#### 简单追踪链（适用于第 2 个及之后的接口）
-
-**必须包含以下内容：请求模板 + 该方法参数定义 + 调用链 + Sink识别 + 可控性判定**
-
-```markdown
-# 路由调用链追踪报告（简化版）
-
-**追踪路由**: `{route}`
-**方法**: `{method}`
-**生成时间**: {date}
-
----
-
-## 1. HTTP 请求数据包
-
-### 1.1 完整请求模板
-```http
-{该方法的完整请求模板}
-```
-
-### 1.2 该方法参数定义
-
-**参数来源**: 从 `{ClassName}.{method}()` 方法签名读取
-
-#### 顶层参数
-| 参数名 | Java类型 | 说明 |
-|:-------|:---------|:-----|
-| {param} | {type} | {desc} |
-
-#### 参数内部结构（如有）
-| 字段名 | Java类型 | 说明 |
-|:-------|:---------|:-----|
-| {field} | {type} | {desc} |
-
-### 1.3 测试用数据包示例
-```http
-{测试数据包}
-```
-
----
-
-## 2. 调用链追踪
-
-### 调用链层级
-```
-[L1] {Class}.{method}()
-    ↓
-[L2] {Class}.{method}()
-    ↓
-[Sink] {Sink类型}: {具体位置}
-```
-
-### Sink 识别
-
-| Sink 类型 | 位置 | 说明 |
-|:----------|:-----|:-----|
-| {SQL/COMMAND/HTTP/FILE/XML/无敏感Sink} | {Class.java:line} | {具体操作} |
-
-### 参数传递关系
-| 参数 | L1 | L2 | ... | 最终使用 |
-|:-----|:---|:---|:----|:---------|
-| {param} | {var} | {var} | ... | {usage} |
-
----
-
-## 3. 可控性判定
-
-| 参数 | Sink类型 | 覆盖类型 | 覆盖条件 | 可控性结论 | 可控场景 |
-|:-----|:---------|:---------|:---------|:-----------|:---------|
-| {param} | {sink} | {type} | {condition} | {✅/⚠️/❌/-} | {scenario} |
-
-**可控性汇总**:
-| 类型 | 参数 | 审计要求 |
-|:-----|:-----|:---------|
-| ✅ 完全可控 | {list} | 需审计 Sink 安全性 |
-| ⚠️ 条件可控 | {list} | 需验证绕过条件 |
-| ❌ 不可控 | {list} | 可排除漏洞可能 |
-| - 无敏感Sink | {list} | 低风险 |
-```
-
-**简化版生成注意事项：**
-- 必须从该方法实际代码读取参数，禁止假设
-- 必须独立追踪该方法的调用链到 Sink
-- 必须识别该方法的 Sink 类型（可能与第1个接口不同）
-- 必须输出该方法的可控性判定（禁止复用其他方法结论）
-- 如果该方法无敏感 Sink，在可控性判定中标注"无敏感Sink，低风险"
-
----
-
-## 限制与边界
-
-**仅执行以下操作：**
-- 追踪指定路由的调用链
-- 输出每层的文件位置和方法签名
-- 记录参数传递关系
-- 生成 HTTP 请求模板
-
-**不执行以下操作：**
-- 不进行安全漏洞检测
-- 不提供修复方案
-- 不判定漏洞等级
-- 不检查业务逻辑正确性
+| 失败表现 | 风险 | 修复方式 |
+|----------|------|----------|
+| 把 sink 可达写成漏洞已确认 | 越界和误报 | 改为证据描述，交给专项 skill |
+| 只写 Controller -> DAO，中间省略 Service/Util | 下游无法复核 | 补齐每层关键调用和位置 |
+| 把所有 public WebService 方法都当接口 | 多报入口 | 按配置、接口或注解确认暴露 operation |
+| 参数被默认值覆盖仍写完全可控 | 误导专项审计 | 按覆盖条件重新判定 |
+| pipeline 报告自行写无鉴权 | 越界 | 只透传上游鉴权信息 |
+| 用户只给项目路径时自动生成大量调用链报告 | 失控和污染输出 | 停止并要求具体入口或 route mapper 批次 |
+| 参数化查询写成无敏感 sink | 下游丢失 SQL 证据 | 记录为 SQL sink，并把参数化作为限制 |
+| 把认证、口令或传输基线写成关键发现 | 越界到认证/配置基线 | 只保留调用链相关事实，必要时交给 auth 或配置审计 |
+| 顺手分析同一持久化组件的其他 SQL 拼接方法 | 污染当前入口证据 | 删除旁路发现，只保留当前入口真实可达链 |
+| 将 ORM Criteria 改写成具体 SELECT | 编造未观察到的 SQL | 只写 `Restrictions.eq(...)` 和 `findByCriteria(...)` 等真实 API |

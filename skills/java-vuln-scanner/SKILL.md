@@ -1,174 +1,145 @@
 ---
 name: java-vuln-scanner
-description: Java 组件版本漏洞检测工具。扫描 pom.xml、build.gradle 或 jar 文件中的第三方依赖，匹配已知漏洞规则（CVE）并生成漏洞检测报告。适用于：(1) Java 项目依赖安全审计，(2) 识别 Log4j、Fastjson、Shiro、Spring 等高危组件漏洞，(3) jar 包反编译后的依赖提取。支持按目录层级分组输出，支持通过 CFR 反编译 .class/.jar 文件提取依赖信息。
+description: 当用户要求审计 Java 项目的第三方依赖、pom.xml/build.gradle/WEB-INF/lib/JAR 中的组件版本、CVE/组件风险命中、SCA 风险或 pipeline 需要组件版本证据时使用；只要求证明某个业务风险是否真实成立、生成可复制验证材料、审计 SQL/XXE/文件/上传/反序列化/鉴权/调用链时不要使用。
 ---
 
-# Java 组件漏洞扫描器
+# Java Vulnerability Scanner
 
-扫描 Java 项目依赖中的已知漏洞，支持 130+ 条 CVE 规则，按模块分组输出，并由 AI 生成漏洞触发点检查结果。
+## 当前定位
 
-## 工作流程
+`java-vuln-scanner` 是 Java 审计技能集中的组件版本证据层。它负责从 Maven、Gradle、JAR、`WEB-INF/lib` 或部署包中提取依赖版本，用本地规则库匹配 CVE/组件风险，并判断哪些命中需要交给专项 skill 继续确认触发面。
 
-### 1. 确定扫描目标
+本 skill 只输出“版本命中”和“触发面待核查”结论，不直接证明业务风险真实成立，不输出可复制验证请求、攻击字符串、通用评分、维护版本承诺或未验证的具体版本建议。组件命中要提交给开发单位时，应明确证据来源、规则局限、受影响模块、需要补证的入口/配置/运行条件，以及应转交的专项审计。
 
-支持的输入类型：
-- `pom.xml` - Maven 项目
-- `build.gradle` - Gradle 项目
-- `.jar` 文件 - 从文件名或 META-INF 提取依赖信息
-- 目录 - 递归扫描上述所有文件，自动按模块分组
+## 上下游边界
 
-### 2. 处理 jar/class 文件（需要反编译时）
+上游输入可以是：
 
-当目标是 `.jar` 或 `.class` 文件且无法直接提取依赖信息时，使用 CFR 反编译器（详见 `java-shared/DECOMPILE_STRATEGY.md`）：
+- Java 项目源码目录、部署包、`WEB-INF/lib`、`pom.xml`、`build.gradle`、`.jar`、`.war`。
+- pipeline 前序阶段提供的项目路径、模块清单或构建产物路径。
+- 用户给出的单个组件名、版本或疑似 CVE。
 
-```bash
-# 反编译单个文件
-java -jar {CFR_JAR} /path/to/file.jar --outputdir {output_path}/decompiled
+下游通常读取：
 
-# 反编译目录
-find /path/to/classes -name "*.class" | xargs java -jar {CFR_JAR} --outputdir {output_path}/decompiled
-```
+- 组件版本命中清单、来源文件和模块归属。
+- CVE/规则命中是否需要业务触发面验证。
+- 应交给 `java-route-mapper`、`java-route-tracer`、`java-auth-audit`、`java-deserialization-audit`、`java-xxe-audit`、`java-file-upload-audit`、`java-sql-audit` 等专项 skill 的事项。
 
-### 3. 执行漏洞扫描
+相邻 skill 边界：
 
-运行扫描脚本，报告自动保存到 `{项目名}_audit/vuln_report/` 目录：
+- `java-route-mapper`：提取路由；本 skill 只引用路由证据，不负责完整路由枚举。
+- `java-route-tracer`：追踪入口到 sink；本 skill 只指出哪些组件命中需要调用链验证。
+- `java-auth-audit`：确认 Shiro/Spring Security/Filter 鉴权绕过等业务可达性；本 skill 只做版本命中。
+- `java-deserialization-audit`：确认 Fastjson、Jackson、XStream、Shiro RememberMe、Commons Collections 等反序列化触发链；本 skill 不生成反序列化利用材料。
+- `java-xxe-audit`：确认 XML 解析组件的 XXE 触发面。
+- `java-file-upload-audit`：确认 Struts2 multipart、Commons FileUpload 等上传入口是否可触发。
+- `java-file-read-audit`：确认 Commons IO、文件路径工具、下载/预览/导出入口是否形成文件读取或路径穿越触发面。
+- SQL、文件读取等业务漏洞专项：只有当组件命中需要具体 sink/入口证明时才交接。
 
-```bash
-python3 scripts/scan_dependencies.py <目标路径> \
-  --rules references/java-vulnerability.yaml \
-  --no-deps
-```
+## 触发条件
 
-参数说明：
-- `<目标路径>`: pom.xml、build.gradle、jar 文件或目录
-- `--rules/-r`: 漏洞规则文件路径（使用内置规则）
-- `--format/-f`: 输出格式 (markdown/json)
-- `--output/-o`: 指定输出路径（不指定则自动生成）
-- `--depth/-d`: 模块分组深度（默认: 2）
-- `--no-deps`: 不显示依赖列表（简化输出）
-- `--no-save`: 仅输出到终端，不保存文件
+满足任一条件时触发：
 
-### 4. 检查扫描结果
+- 用户要求扫描 Java 依赖、组件版本、CVE、SCA、Log4j/Fastjson/Shiro/Spring/Struts2/Jackson/XStream 等组件风险。
+- 用户提供 `pom.xml`、`build.gradle`、JAR/WAR、`WEB-INF/lib` 或部署包，要求判断是否存在已知组件风险。
+- pipeline 需要组件版本命中清单，作为后续专项审计输入。
+- 用户给出组件名和版本，要求按本地规则库判断是否命中。
 
-报告按模块分组，每个模块按严重级别分类：
-- 🔴 **Critical**: 立即修复（Log4Shell、Fastjson RCE、Shiro 反序列化等）
-- 🟠 **High**: 尽快修复（Spring Boot Actuator、XStream 等）
-- 🟡 **Medium**: 计划修复（JDBC 驱动漏洞、Guava 等）
-- 🔵 **Low**: 建议升级（过时组件）
+## 不触发条件
 
-### 5. AI 漏洞触发点分析（重要）
+以下情况不要触发本 skill：
 
-扫描完成后，**必须**基于扫描结果，按照 `references/OUTPUT_TEMPLATE.md` 模板填充完整报告（**单个文件**）。
+- 用户要求证明具体接口风险真实成立、输出可复制验证请求或攻击字符串。
+- 用户要求审计 SQL 注入、XXE、文件上传、文件读取、反序列化、鉴权、命令执行或调用链，且不是从组件版本入手。
+- 用户要求最新官方安全公告、具体升级版本或实时 CVE 状态；本 skill 的本地规则库不是实时情报源。
+- 只需要路由清单、API 文档或调用链证据。
+- 用户要求对线上目标做未授权验证或利用。
 
-#### 分析步骤
+## 成功标准
 
-1. 读取 Python 脚本生成的扫描结果
-2. **识别项目运行环境**：
-   - 检查项目使用的框架：Spring MVC / Spring Boot / Struts2 / Servlet / JAX-RS 等
-   - 检查容器类型：Tomcat / Jetty / Undertow / WebLogic / WildFly 等
-   - 查找配置文件：`web.xml`、`struts.xml`、`application.yml`、`applicationContext.xml` 等
-3. **提取路由和入口点**：
-   - 扫描 Controller / Action / Servlet 类，提取 HTTP 路由映射
-   - 识别文件上传、JSON/XML 解析、用户输入处理等关键入口
-   - 结合 java-route-mapper 技能（如已加载）获取完整路由信息
-4. 提取检测到的**唯一漏洞组件**列表（去重）
-5. **按模板填充报告**，每个漏洞的详情区块必须包含：
-   - 触发条件
-   - 危险代码模式（java 代码块）
-   - 攻击向量
-   - 受影响的路由/接口
-   - 代码搜索命令（bash 代码块）
-   - 修复建议
-6. 使用 Write 工具将完整报告写入 **单个文件**
+合格输出必须同时满足：
 
-#### 环境识别方法
+- 依赖来源可追溯到具体文件、模块和版本，区分 Maven/Gradle/JAR/MANIFEST/pom.properties 来源。
+- 依赖来源路径必须是可复核的相对路径或绝对路径，不得用 `...`、`…` 或省略写法截断。
+- 统计数字必须来自脚本结果或可复核清点，不能使用约数、范围数或“多项/若干”；第 2 节 `版本命中` 和 `未命中` 必须使用同一口径的依赖实例数，唯一组件版本数量只放在说明或第 3 节。
+- 正式报告的组件命中、规则名和 CVE 必须来自 `scripts/scan_dependencies.py` JSON 结果；脚本未输出的 CVE/规则不得凭记忆补写。
+- 同一组件存在更多公开公告或历史 CVE 时，正式报告也只能列脚本 JSON 实际返回项；额外 CVE 只能写成“需复核官方公告或企业 SCA”，不能列编号。
+- 清楚说明本地规则库命中的是版本证据，不等于业务风险真实成立。
+- 将命中项标为 `版本命中`、`触发面待核查`、`环境条件待确认`、`不可确认` 或 `未命中`，不得写业务风险成立结论。
+- 对每个命中项说明触发面需要哪些入口、配置、JDK/容器、序列化/XML/上传/日志等运行条件。
+- 输出应交给哪个专项 skill 继续确认；没有触发面证据时不输出可复制验证材料。
+- 报告严格使用 `references/OUTPUT_TEMPLATE.md` 的 6 个编号章节，不添加额外内部检查、技能源校验、测试提示词或模型验收信息。
+- 面向用户的最终对话回复必须只使用固定格式：第一行 `报告路径：<path>`；第二行只写 `发现组件版本命中，详见报告。`、`未发现组件版本命中，详见报告。` 或 `组件版本命中不可确认，详见报告。` 三选一；不得描述 QA 过程、校验结果或组件摘要。
+- 不编造通用评分、具体版本建议、验证成功、真实攻击链、可复制利用材料、线上影响范围或不存在的依赖。
+- 明确本地规则库的时间/覆盖局限：规则命中需结合官方公告或企业 SCA 平台复核。
 
-根据以下特征识别项目环境（参考 java-route-mapper 技能的识别策略）：
+## 工作流
 
-**Web 框架识别：**
+1. 确定扫描范围：读取用户指定路径，识别 `pom.xml`、`build.gradle`、`.jar`、`.war`、`WEB-INF/lib` 和模块边界。
+2. 选择 references：规则解释读 `RULE_USAGE.md`；触发面分流读 `TRIGGER_SURFACE_GUIDE.md`；报告读 `OUTPUT_TEMPLATE.md`。
+3. 运行确定性脚本：必须使用 `scripts/scan_dependencies.py <目标路径> --rules references/java-vulnerability.yaml --format json --no-save` 获取依赖和规则命中；需要保存中间结果时放到临时目录，不作为正式报告。
+4. 去重和归并：同一组件、同一版本、同一 CVE/规则在多个模块出现时按模块列证据，按根因聚合说明。
+5. 做触发面初筛：只读取必要配置和入口证据，判断是否需要交给专项 skill；不要在本 skill 内补写漏洞利用链。
+6. 生成报告：按 `OUTPUT_TEMPLATE.md` 写单个最终报告文件，文件名为 `{project_name}_vuln_scan_{YYYYMMDD_HHMMSS}.md`。
+7. 可运行仓库级维护脚本 `tools/skill-maintenance/validators/validate_vuln_output.py <输出目录>` 检查报告格式和禁止项；检查结果只用于内部修正，不写入报告，也不告诉用户“已通过检查”。
+8. 面向用户的最终回复只给报告路径和一句固定结论，不输出 QA 过程、脚本日志、内部规则编号、组件命中数量、组件清单或额外漏洞摘要。
 
-| 框架 | 识别特征 | 配置文件 | 关键依赖 |
-|------|---------|---------|---------|
-| Spring MVC | `@Controller`、`@RequestMapping`、`@RestController` | `dispatcher-servlet.xml`、`spring-mvc.xml` | `spring-webmvc.jar` |
-| Spring Boot | `@SpringBootApplication`、Spring Boot starter | `application.properties`、`application.yml` | `spring-boot-starter-*.jar` |
-| Struts 2 | `ActionSupport`、`\<action\>` 配置 | `struts.xml`、`struts-plugin.xml` | `struts2-core.jar` |
-| Servlet | `HttpServlet`、`@WebServlet`、`\<servlet\>` 配置 | `web.xml` | `javax.servlet-api.jar` |
-| JAX-RS | `@Path`、`@GET`、`@POST`、`@PathParam` | `web.xml`（REST servlet 映射） | `jersey-*.jar`、`cxf-rt-*.jar` |
-| CXF Web Services | `@WebService`、`\<jaxws:endpoint\>` | `applicationContext.xml`、`cxf-servlet.xml` | `cxf-*.jar` |
+## Hard Rules
 
-**容器识别：**
+- 组件版本命中不等于业务风险真实成立；不得写成立结论。
+- 没有依赖来源文件和版本，不得输出 CVE/规则命中。
+- 脚本 JSON 未输出的 CVE/规则命中不得写入正式报告；模型记忆和外部常识不能覆盖本地规则结果。
+- `vulnerabilities[].name` 是正式报告中 `规则/CVE 命中` 的唯一来源；不得把同一组件的其他历史 CVE、别名规则或修补记录合并到表格。
+- 本地 `java-vulnerability.yaml` 不是实时漏洞情报；不得声称“最新”“完整覆盖”或“官方确认当前维护版本”。
+- 不输出通用评分，除非用户提供了权威来源并明确要求引用。
+- 不输出具体版本建议；规则描述中的升级建议必须忽略，只保留组件、当前版本、命中规则、证据路径和需复核官方公告或企业 SCA 的限制说明。
+- 不输出可复制验证请求、攻击字符串、反序列化链对象、JNDI 地址、恶意 XML、上传利用包或可执行利用步骤。
+- 如果用户要验证某个命中是否真实成立，切换到对应专项 skill；本 skill 只输出交接方向和补证清单。
+- JAR 文件名解析、MANIFEST、pom.properties 都可能不完整；无法确认 groupId/version 时标为 `不可确认`。
+- 规则正则可能重复命中同一组件多个 CVE；报告要去重聚合，避免把重复规则当作多个独立依赖。
+- 不把测试依赖、provided 依赖、插件依赖和运行时 WEB-INF/lib 混为一谈；不确定 scope 时写限制说明。
+- 正式报告不得出现额外内部检查章节、技能源校验、测试提示词、模型运行状态、脚本异常堆栈、审批/权限信息或内部规则编号。
+- 最终状态枚举只使用：`版本命中`、`触发面待核查`、`环境条件待确认`、`不可确认`、`未命中`。
+- 最终对话回复不得描述 QA 过程、校验通过、内部检查、命中数量、最高等级，也不得在报告路径之外复述组件清单。
+- `依赖总数`、`已解析依赖`、`版本命中`、`未命中` 等统计项必须使用精确数字；无法精确统计时写 `不可确认` 并说明缺失证据，不得写 `约`、`~`、`大约`。
+- 解释聚合逻辑时只写“按同一组件/版本/规则聚合”，不得写 `规则 #N`、脚本内部序号或规则库位置。
+- 报告表格只保留真实信息，不得为了凑序号、补齐表格或避免空表而添加占位行；没有内容时在已有章节中写“无”并说明原因。
+- 来源文件、模块和证据路径不得使用省略号或截断路径；路径太长时写相对于扫描根目录的完整相对路径。
+- 如果第 5 节列出各模块未命中数量，模块数量之和必须等于第 2 节 `未命中`；不能混用“唯一组件版本数”和“JAR 实例数”。
 
-| 容器 | 识别特征 | 配置文件 |
-|------|---------|---------|
-| Tomcat | `catalina.jar`、`org.apache.catalina` | `server.xml`、`context.xml` |
-| Jetty | `jetty-*.jar`、`org.eclipse.jetty` | `jetty.xml`、`webdefault.xml` |
-| Undertow | `undertow-*.jar`、`io.undertow` | `undertow-handlers.conf` |
-| WebLogic | `weblogic.jar`、`weblogic.xml` | `weblogic.xml`、`weblogic-application.xml` |
-| WildFly/JBoss | `jboss-*.jar`、`org.jboss` | `jboss-web.xml`、`standalone.xml` |
+## Gotchas
 
-**框架组合识别：**
+- `artifactId-version.jar` 可能是重打包、厂商改名或 shade 包，版本命中要写来源局限。
+- 一个组件旧版本可能命中多个 CVE；这通常是一个升级治理事项，不是多个已确认业务漏洞。
+- Spring4Shell、Struts2、Shiro、Fastjson 等 CVE 都有运行条件；版本命中缺少入口/配置时只能待核查。
+- Log4j 1.x/2.x 命中需要看实际日志调用和可控输入，不要直接给 JNDI 验证字符串。
+- Fastjson/Jackson/XStream 命中应交给反序列化或 XML 专项确认是否解析用户输入。
+- Commons FileUpload/Struts multipart 命中应交给上传专项确认是否有可达上传入口。
+- Shiro 命中应交给鉴权或反序列化专项确认 RememberMe、密钥、filter chain 和可达性。
+- 只扫描源码 `pom.xml` 可能漏掉部署包实际 JAR；只扫描 `WEB-INF/lib` 可能缺少父 POM 版本管理。
+- 规则库描述中出现“RCE”“SQL 注入”等是组件公告类型，不代表当前项目已出现该漏洞。
 
-多框架混合项目需要分别识别并检查：
-- Struts2 + Spring：检查 `struts-spring-plugin.jar` 和 Spring 配置
-- Spring MVC + CXF：检查 `\<jaxws:endpoint\>` 和 `@Controller` 共存
-- Servlet + Filter 链：检查 `web.xml` 中的 filter-mapping 顺序
+## 停止、确认或切换条件
 
-## 漏洞规则覆盖
+- 找不到依赖文件或 JAR 版本：停止命中结论，输出不可确认和需要补充的构建/部署材料。
+- 用户要求可复制验证请求、攻击字符串或利用验证：停止在组件版本证据，切换到对应专项 skill。
+- 用户要求最新 CVE、具体升级版本或官方公告：说明本地规则库局限，建议使用官方公告或企业 SCA 复核。
+- 命中项需要路由、鉴权、调用链或 sink 证据：交给 route/auth/tracer 或对应漏洞专项。
+- 发现规则库自身明显过期或无法解析：记录规则局限，不临时编造新规则。
 
-规则文件 `references/java-vulnerability.yaml` 包含 130+ 条规则，覆盖：
+## Eval
 
-| 组件类别 | 主要漏洞 |
-|---------|---------|
-| Log4j | CVE-2021-44228 (Log4Shell), CVE-2021-45046 |
-| Fastjson | CVE-2022-25845, CVE-2017-18349 |
-| Spring | CVE-2022-22965 (Spring4Shell), CVE-2022-22963 |
-| Struts2 | S2-045, S2-046, S2-057, S2-061 |
-| Shiro | CVE-2016-4437, CVE-2020-11989, CVE-2020-17510 |
-| Jackson | CVE-2020-36518, CVE-2019-12384 |
-| XStream | CVE-2021-39144 等 15 个 CVE |
-| ActiveMQ | CVE-2023-46604 |
-| JDBC 驱动 | MySQL, PostgreSQL, H2, Derby 等 |
-
-## 示例
-
-### 完整扫描流程
-
-```bash
-# 1. 执行扫描
-python3 scripts/scan_dependencies.py /path/to/webapp \
-  --rules references/java-vulnerability.yaml \
-  --no-deps
-
-# 2. 输出示例:
-# [INFO] 创建输出目录: webapp_audit/vuln_report
-# [INFO] 报告已保存到: webapp_audit/vuln_report/webapp_vuln_report_20260204_101747.md
-# 📊 扫描摘要:
-#    模块数量: 4
-#    依赖总数: 262
-#    漏洞总数: 80
-#    🔴 严重: 24
-
-# 3. AI 自动读取报告并追加触发点检查结果
-```
-
-### 输出报告结构
-
-> **输出约束（不可违反）：**
-> 1. **输出为单个文件** — 不得拆分为多个文件
-> 2. 文件命名格式: `{project_name}_vuln_report_{YYYYMMDD_HHMMSS}.md`
-> 3. 必须严格按照 `references/OUTPUT_TEMPLATE.md` 模板填充输出
-> 4. 不得增删章节、不得调整章节顺序
-
-**输出模板**: [references/OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md)
-
-```
-{project_name}_audit/vuln_report/
-└── {project_name}_vuln_report_{YYYYMMDD_HHMMSS}.md   ← 仅此 1 个文件
-    ├── 1. 扫描概述
-    ├── 2. 风险统计
-    ├── 3. 组件漏洞映射表
-    ├── 4. 漏洞详情（含触发条件、危险代码、攻击向量、搜索命令）
-    └── 5. 审计结论
-```
-
-通用输出规范参考: [java-shared/OUTPUT_STANDARD.md](../java-shared/OUTPUT_STANDARD.md)
+| 类型 | 用户请求或场景 | 预期行为 |
+|------|----------------|----------|
+| 正例 | “扫描这个 Java 项目有没有 Log4j/Fastjson/Shiro 组件风险。” | 触发，提取依赖并按规则输出版本命中 |
+| 正例 | “这个 WAR 的 WEB-INF/lib 里有哪些 CVE 命中？” | 触发，扫描 JAR 并标注来源 |
+| 正例 | “pipeline 需要组件漏洞输入。” | 触发，输出后续专项交接清单 |
+| 反例 | “Fastjson 这个接口能不能打反序列化？” | 不触发或仅作为前置证据，交给 `java-deserialization-audit` |
+| 反例 | “给我 Log4Shell 的 JNDI 验证字符串。” | 不输出可复制验证材料，拒绝利用细节并保留版本审计 |
+| 反例 | “审计所有 Controller 鉴权绕过。” | 不触发，使用 `java-auth-audit` |
+| 边界例 | JAR 文件名含版本但无 groupId | 可记录版本命中候选，状态为不可确认或触发面待核查 |
+| 边界例 | `pom.xml` 命中但 scope 是 test | 记录限制，不作为运行时风险直接处理 |
+| 边界例 | 同一组件命中多个 CVE | 聚合为同一组件治理项，列规则命中 |
+| 失败案例 | 把 CVE 命中写成业务风险成立并给可复制验证材料 | 不合格，越过组件证据边界 |
+| 失败案例 | 输出通用评分、具体版本建议或“已真实成立”但无来源 | 不合格，编造不可验证信息 |
+| 失败案例 | 把脚本原始报告当最终报告并保留额外内部检查/日志 | 不合格，未使用新版模板 |

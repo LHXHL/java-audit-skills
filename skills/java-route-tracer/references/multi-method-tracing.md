@@ -1,433 +1,156 @@
-# 多接口方法追踪策略
-
-## 概述
-
-当遇到包含多个业务方法的类时（如 Web Service 有多个接口方法、Controller 有多个端点方法），技能会自动识别并追踪所有方法。
-
-## 方法发现策略（通用）
+# 多入口与多方法追踪规则
 
-```python
-def find_all_entry_methods(entry_class):
-    methods = []
+本 reference 只解决一个问题：一个用户请求或一个分配项到底对应哪些真实入口方法，应该如何逐个输出。它不负责漏洞判定。
 
-    if is_spring_controller(entry_class):
-        methods.extend(find_spring_mapping_methods(entry_class))
-
-    elif is_struts_action(entry_class):
-        methods.extend(find_struts_methods(entry_class))
-
-    elif is_servlet(entry_class):
-        methods.extend(find_servlet_methods(entry_class))
-
-    elif is_jaxrs_resource(entry_class):
-        methods.extend(find_jaxrs_mapping_methods(entry_class))
-
-    elif is_webservice(entry_class):
-        methods.extend(find_webservice_methods(entry_class))
-
-    return methods
-```
-
----
-
-## 各框架的方法识别规则
-
-### 1. Spring MVC 多接口方法
-
-**识别条件**: 查找所有带 `@RequestMapping` 或 HTTP 方法注解的方法
-
-```python
-def find_spring_mapping_methods(controller_class):
-    spring_methods = []
-    for method in controller_class.getMethods():
-        has_mapping = False
-        if has_annotation(method, "RequestMapping") or \
-           has_annotation(method, "GetMapping") or \
-           has_annotation(method, "PostMapping") or \
-           has_annotation(method, "PutMapping") or \
-           has_annotation(method, "DeleteMapping"):
-            spring_methods.append(method)
-    return spring_methods
-```
-
-### 2. Struts 2 多 Action 方法
-
-**识别条件**: 查找符合 Struts 2 方法签名的方法
-
-```python
-def find_struts_methods(action_class):
-    struts_methods = []
-    for method in action_class.getMethods():
-        if is_valid_struts_method(method):
-            struts_methods.append(method)
-    return struts_methods
-
-def is_valid_struts_method(method):
-    if method.getParameterCount() > 0:
-        return False
-    if method.getReturnType() != String.class and method.getReturnType() != void.class:
-        return False
-    if method.getName().startsWith("get") or method.getName().startsWith("set"):
-        return False
-    return True
-```
-
-### 3. Servlet 多请求方法
-
-**识别条件**: 识别 doGet/doPost/doPut/doDelete 等方法
-
-```python
-def find_servlet_methods(servlet_class):
-    servlet_methods = []
-    for method in servlet_class.getMethods():
-        if method.getName().startswith("do") and \
-           method.getParameterCount() == 2 and \
-           has_parameter_type(method, "HttpServletRequest") and \
-           has_parameter_type(method, "HttpServletResponse"):
-            servlet_methods.append(method)
-    return servlet_methods
-```
-
-### 4. JAX-RS 资源方法
+## 1. 入口枚举原则
 
-**识别条件**: 查找带 `@Path` 或 HTTP 方法注解的方法
+先确认入口来源，再枚举方法：
 
-```python
-def find_jaxrs_mapping_methods(resource_class):
-    jaxrs_methods = []
-    for method in resource_class.getMethods():
-        if has_annotation(method, "Path") or \
-           has_annotation(method, "GET") or \
-           has_annotation(method, "POST"):
-            jaxrs_methods.append(method)
-    return jaxrs_methods
-```
-
-### 5. Web Service 多接口方法
-
-**识别条件**: 扫描实现类的所有 public 方法
+1. 优先读取 `route_mapper/` 主索引和模块详情。
+2. route mapper 不存在或过期时，读取框架配置和源码注解。
+3. 用户明确指定类方法时，仍需标注“用户指定入口”，并说明是否能绑定 Web 路由。
+4. 只能枚举真实暴露的方法；内部 helper、getter/setter、Object 方法、未映射重载方法不得算入口。
 
-```python
-def find_webservice_methods(service_impl_class):
-    methods = []
-    for method in dir(service_impl_class):
-        if not method.startswith('__') and method not in ['equals', 'hashCode', 'toString', 'clone']:
-            method_obj = getattr(service_impl_class, method)
-            if callable(method_obj):
-                methods.append(method)
-    return methods
+禁止使用“类里所有 public 方法”替代入口枚举，除非它们确实被 WebService 接口、注解或配置暴露。
 
-def filter_webservice_methods(methods, interface_class):
-    ws_methods = []
-    for method in methods:
-        if hasattr(interface_class, method):
-            if callable(getattr(interface_class, method)):
-                ws_methods.append(method)
-    return ws_methods
-```
+## 2. 各框架方法识别
 
----
+### 2.1 Spring MVC / Spring Boot
 
-## 执行流程优化（含接口数量优化策略）
+入口方法来自以下证据：
 
-```python
-def audit_route(entry_class, route_path):
-    print(f"正在扫描入口类: {entry_class.getName()}")
+- 类级 `@RequestMapping`、`@RestController`、`@Controller`。
+- 方法级 `@RequestMapping`、`@GetMapping`、`@PostMapping`、`@PutMapping`、`@DeleteMapping`、`@PatchMapping`。
+- 接口上的 mapping 注解和实现类。
+- `WebMvcConfigurer`、`PathMatchConfigurer#addPathPrefix` 等前缀配置。
 
-    entry_methods = find_all_entry_methods(entry_class)
+处理规则：
 
-    if not entry_methods:
-        print(f"❌ 未找到有效的入口方法")
-        return
+- 类级路径和方法级路径必须组合。
+- 同名重载必须按 HTTP method、path、参数绑定区分。
+- 没有方法级 mapping 的普通 public 方法不是入口。
+- 若只有类级 mapping 且方法无 mapping，除非框架或项目约定证明可达，否则标注“未确认入口”。
 
-    method_count = len(entry_methods)
-    print(f"✅ 发现 {method_count} 个入口方法")
+### 2.2 Struts2
 
-    # 根据接口数量选择追踪策略
-    use_optimization = method_count > 3
+入口方法来自以下证据：
 
-    for i, entry_method in enumerate(entry_methods, 1):
-        print(f"\n--- 方法 {i}/{method_count}: {entry_method.getName()} ---")
-        try:
-            if i == 1:
-                print(f"[策略] 完整追踪链")
-                trace_single_method(entry_class, entry_method)
-                generate_method_report(entry_class, entry_method, full_report=True)
-            else:
-                print(f"[策略] 简化追踪链 (接口数量较多优化)")
-                trace_single_method(entry_class, entry_method, simplified=True)
-                generate_method_report(entry_class, entry_method, full_report=False)
-        except Exception as e:
-            print(f"❌ 追踪失败: {entry_method.getName()} - {str(e)}")
-            continue
+- `struts.xml`、`struts-*.xml`、package namespace、action name、method。
+- 通配符 action 与 method 映射，例如 `{1}`、`{2}`。
+- DMI 或 `method:` 前缀只有在项目配置启用且 URL 可达时才纳入。
 
-    print(f"\n✅ 所有 {method_count} 个方法追踪完成")
-    generate_all_methods_index(entry_class, entry_methods)
-```
+处理规则：
 
----
+- 默认 `execute()` 只有在 action 未指定 method 时使用。
+- getter/setter、validate、input、prepare、内部 helper 不算业务入口，除非配置明确指向。
+- 通配符必须展开到实际 URL/method 实例；不能只写 `*_*`。
+- 父类方法只有在 action 配置或通配符实例能调用时才算入口。
 
-## 输出文件命名策略
+### 2.3 Servlet
 
-### 单个方法报告
+入口方法来自以下证据：
 
-```
-{项目名}_audit/route_tracer/{项目名}_trace_{method_name}_{时间戳}.md
+- `web.xml` servlet mapping。
+- `@WebServlet`。
+- Servlet registration bean。
 
-示例:
-myproject_audit/route_tracer/myproject_trace_getBasicQuery_20260204.md
-myproject_audit/route_tracer/myproject_trace_getAdvancedQuery_20260204.md
-myproject_audit/route_tracer/myproject_trace_getDetailQuery_20260204.md
-```
+处理规则：
 
-### 总索引报告
+- 按 HTTP method 选择 `doGet`、`doPost`、`doPut`、`doDelete` 等。
+- 如果类覆盖 `service()`，必须先追 `service()`，再判断是否分派到 `doXxx`。
+- `url-pattern` 为 `/api/*` 或 `*.do` 时，继续追 `pathInfo`、`servletPath`、参数分发或反射分发。
 
-**文件名**: `{项目名}_audit/route_tracer/{项目名}_trace_all_methods_{时间戳}.md`
+### 2.4 JAX-RS
 
-**内容示例**:
+入口方法来自：
 
-```markdown
-# /api/ws/userQuery Web Service 所有方法追踪索引
+- `@ApplicationPath`。
+- 类级 `@Path`。
+- 方法级 `@Path`。
+- HTTP 方法注解：`@GET`、`@POST`、`@PUT`、`@DELETE`、`@PATCH` 等。
 
-生成时间: 2026-02-04
+处理规则：
 
-## 方法清单（共10个）
+- 类级和方法级 `@Path` 必须组合。
+- 只有 `@Path` 但没有 HTTP 方法注解时，确认是否由子资源定位器返回资源对象；不确认时标注限制。
+- `@PathParam`、`@QueryParam`、`@HeaderParam`、`@BeanParam` 都要纳入参数追踪。
 
-| 方法名 | 参数列表 | 文件位置 |
-|:-------|:---------|:---------|
-| getBasicQuery | searchJson, pageJson, extend | [myproject_trace_getBasicQuery_20260204.md](myproject_trace_getBasicQuery_20260204.md) |
-| getAdvancedQuery | searchJson, pageJson, extend | [myproject_trace_getAdvancedQuery_20260204.md](myproject_trace_getAdvancedQuery_20260204.md) |
-| getDetailQuery | searchJson, pageJson, extend | [myproject_trace_getDetailQuery_20260204.md](myproject_trace_getDetailQuery_20260204.md) |
-| getStatisticsQuery | searchJson, pageJson, extend | [myproject_trace_getStatisticsQuery_20260204.md](myproject_trace_getStatisticsQuery_20260204.md) |
-| getExportQuery | searchJson, pageJson, extend | [myproject_trace_getExportQuery_20260204.md](myproject_trace_getExportQuery_20260204.md) |
-| getReportQuery | searchJson, pageJson, extend | [myproject_trace_getReportQuery_20260204.md](myproject_trace_getReportQuery_20260204.md) |
-| ... 更多方法 ... |
-```
+### 2.5 WebService / SOAP
 
----
+入口方法来自：
 
-## 参数结构检查优化
+- `@WebService`、`@WebMethod`、接口类。
+- CXF/JAX-WS/Axis endpoint 配置。
+- WSDL 或项目生成的服务接口。
 
-对于参数结构相同的方法，可以采用通用模式检查：
+处理规则：
 
-```markdown
----
+- endpoint address 来自配置或注解，不从实现类名猜测。
+- operation 以接口、`@WebMethod`、WSDL 或配置为准。
+- `@WebMethod(exclude=true)`、private/protected helper、Object 方法不算 operation。
+- 多个 operation 参数结构相同，也必须逐个追踪，不能用“同上”省略。
 
-## 方法参数结构检查（通用）
+## 3. 输出策略
 
-**所有37个方法都采用相同的参数结构**:
+### 3.1 单方法入口
 
-| 参数名 | 类型 | 说明 |
-|:-------|:-----|:-----|
-| searchJson | String | 查询条件JSON (反序列化为 XXXQueryBean) |
-| pageJson | String | 分页参数JSON (Page<XXX>类型) |
-| extend | String | 扩展参数 |
+若一个路由只对应一个真实入口方法：
 
-### 参数流向追踪（通用模式）
+- 生成 1 份报告。
+- 优先使用 `OUTPUT_TEMPLATE_FULL.md`。
+- 文件放在 `route_tracer/{route_slug}/`。
 
-```
-HTTP SOAP Body → searchJson → 反序列化为 QueryBean
-                                    ↓
-                    [业务处理逻辑层]
-                                    ↓
-            → 拼接到 SQL 或 执行其他敏感操作
-```
+### 3.2 多方法入口
 
----
+若一个路由、WebService endpoint、Servlet dispatcher 或 Struts 通配符对应多个真实方法：
 
-## 参数验证逻辑检查（通用）
+- 生成 1 份索引报告。
+- 每个真实入口方法生成 1 份方法报告。
+- 索引必须列出全部方法、参数、sink 摘要、可控性摘要和文件链接。
+- 不允许 `...`、`等`、`其他方法相同`、`更多见源码`。
 
-所有方法都调用 `WebServiceUtil.valiatePam()` 进行参数验证：
+报告模板选择：
 
-```java
-if ("error".equals(extend)) {
-    json = WebServiceUtil.valiatePam(...);
-}
-```
-```
+- 命中敏感 sink、分支复杂、用户点名、或下游会读取的入口：使用 `OUTPUT_TEMPLATE_FULL.md`。
+- 未命中敏感 sink、调用链很短、重复模式明显且证据已足够：可使用 `OUTPUT_TEMPLATE_SIMPLE.md`。
+- 即使用简化模板，也必须独立追踪该方法，不能复用另一个方法的结论。
 
----
+### 3.3 Pipeline worker
 
-## 报告生成优化
+在 `agent-5-N` 批次中：
 
-### 方法报告生成策略（支持完整/简化版）
+- 以批次清单为边界，不扩展到未分配路由。
+- 每条路由使用稳定 `route_slug` 子目录，例如 `/api/user/list` -> `api_user_list`。
+- 文件名使用时间戳 `YYYYMMDD_HHMMSS`。
+- 如果批次输入带有 route id，报告中保留 route id，便于负责人对账。
 
-```python
-def generate_method_report(entry_class, entry_method, full_report=True):
-    if full_report:
-        report_content = generate_full_report(entry_class, entry_method)
-    else:
-        report_content = generate_simplified_report(entry_class, entry_method)
+## 4. 断点恢复
 
-    report_filename = f"{get_project_name()}_trace_{entry_method.getName()}_{get_timestamp()}.md"
-    write_to_file(report_filename, report_content)
-    print(f"[报告] {'完整' if full_report else '简化'}版已生成: {report_filename}")
+恢复旧任务时：
 
-def generate_full_report(entry_class, entry_method):
-    report_content = f"# {entry_method.getName()} 调用链追踪报告\n\n"
-    report_content += f"**方法签名**: {entry_method.getName()}{format_parameter_types(entry_method)}\n"
-    report_content += f"**文件位置**: {entry_class.getName()}:{entry_method.getLineNumber()}\n"
+1. 读取批次清单或 route mapper 预期路由。
+2. 读取已存在的 `route_tracer/{route_slug}/`。
+3. 对比索引和方法报告数量。
+4. 只补做缺失或自检失败的报告。
+5. 新报告必须重新检查源码，不得只复制旧结论。
 
-    # 收集完整追踪数据
-    call_chain = trace_single_method(entry_class, entry_method, simplified=False)
-    for level, method_call in enumerate(call_chain, 1):
-        report_content += format_level_content(level, method_call, full=True)
+## 5. 失败与限制记录
 
-    return report_content
+无法完成某条入口时仍要写清楚：
 
-def generate_simplified_report(entry_class, entry_method):
-    report_content = f"# {entry_method.getName()} 调用链追踪报告（简化版）\n\n"
-    report_content += f"**方法签名**: {entry_method.getName()}{format_parameter_types(entry_method)}\n"
-    report_content += f"**文件位置**: {entry_class.getName()}:{entry_method.getLineNumber()}\n"
-    report_content += f"**报告类型**: 简化版（接口数量较多优化）\n\n"
+- 路由或 method 标识。
+- 已检查的证据来源。
+- 阻塞原因，例如源码缺失、配置缺失、反编译失败、动态反射目标不可确定。
+- 对下游的影响，例如“无法证明参数到达 SQL sink”。
 
-    # 收集简化追踪数据
-    call_chain = trace_single_method(entry_class, entry_method, simplified=True)
-    for level, method_call in enumerate(call_chain, 1):
-        report_content += format_level_content(level, method_call, full=False)
+失败项不能悄悄跳过。
 
-    return report_content
+## 6. 常见误判
 
-def format_level_content(level, method_call, full=True):
-    content = f"### [Level {level}] {method_call['class']}.{method_call['method']()}\n"
-    content += f"**文件**: `{method_call['file']}`\n"
-
-    if full:
-        content += f"**完整代码**:\n```java\n{method_call['code']}\n```\n"
-        content += f"**分支判定**:\n{format_branch_analysis(method_call['branches'])}\n"
-    else:
-        content += f"**调用关系**: {method_call['description']}\n"
-
-    content += "\n---\n"
-    return content
-```
-
----
-
-## 常见问题处理
-
-### 1. 超类继承的方法
-
-对于继承自超类的方法，需要检查超类的注解信息：
-
-```python
-def find_inherited_methods(entry_class):
-    inherited_methods = []
-    current_class = entry_class
-
-    while current_class != object:
-        for method in current_class.getMethods():
-            if method.getDeclaringClass() != entry_class:
-                if is_entry_method(method):
-                    inherited_methods.append(method)
-        current_class = current_class.getSuperclass()
-
-    return inherited_methods
-```
-
-### 2. 接口默认方法
-
-对于 Java 8+ 的接口默认方法，需要特殊处理：
-
-```python
-def find_interface_default_methods(entry_class):
-    default_methods = []
-
-    for iface in entry_class.getInterfaces():
-        for method in iface.getMethods():
-            if has_annotation(method, "Default"):
-                default_methods.append(method)
-
-    return default_methods
-```
-
----
-
-## 性能优化
-
-### 1. 并发执行追踪
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-
-def audit_route_parallel(entry_class, route_path):
-    entry_methods = find_all_entry_methods(entry_class)
-
-    with ThreadPoolExecutor(max_workers=min(len(entry_methods), 4)) as executor:
-        futures = []
-        for entry_method in entry_methods:
-            future = executor.submit(audit_single_method, entry_class, entry_method)
-            futures.append(future)
-
-        for future in futures:
-            try:
-                future.result()
-            except Exception as e:
-                logger.error(f"审计失败: {e}")
-```
-
-### 2. 结果缓存
-
-```python
-import hashlib
-import os
-
-def get_report_cache_key(entry_class, entry_method):
-    method_signature = f"{entry_class.getName()}:{entry_method.getName()}"
-    return hashlib.md5(method_signature.encode()).hexdigest()
-
-def get_cached_report(cache_key):
-    cache_dir = "cache/reports"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-    cache_file = os.path.join(cache_dir, f"{cache_key}.md")
-    if os.path.exists(cache_file):
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return f.read()
-    return None
-
-def save_report_to_cache(cache_key, content):
-    cache_dir = "cache/reports"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-    cache_file = os.path.join(cache_dir, f"{cache_key}.md")
-    with open(cache_file, 'w', encoding='utf-8') as f:
-        f.write(content)
-```
-
----
-
-## 工具集成
-
-### 与 java-route-mapper 的配合
-
-```python
-# 使用 java-route-mapper 提取接口信息
-def extract_interface_info(project_path):
-    route_map = run_java_route_mapper(project_path)
-
-    interface_info = []
-    for route in route_map:
-        class_info = find_class_by_route(route)
-        if class_info:
-            interface_info.append({
-                "route": route,
-                "class": class_info["class"],
-                "methods": find_all_entry_methods(class_info["class"])
-            })
-
-    return interface_info
-
-def run_java_route_mapper(project_path):
-    # 调用 java-route-mapper 提取路由信息
-    result = subprocess.run(
-        ["java-route-mapper", project_path],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-
-    return parse_route_mapper_output(result.stdout)
-```
+| 误判 | 为什么错 | 正确处理 |
+|------|----------|----------|
+| Spring 类里所有 public 方法都当接口 | 只有 mapping 方法可达 | 按类级和方法级 mapping 枚举 |
+| Struts 通配符只写一个模板路由 | 下游无法定位具体 action | 展开实际 URL/method 实例 |
+| WebService 实现类 helper 算 operation | helper 未暴露给 SOAP | 以接口、注解、WSDL 或配置为准 |
+| Servlet `/api/*` 只追 `doPost` | 真实业务可能由 pathInfo 分发 | 继续追分发逻辑 |
+| 多方法报告用“同上” | 每个方法 sink 和分支可能不同 | 逐个输出证据 |

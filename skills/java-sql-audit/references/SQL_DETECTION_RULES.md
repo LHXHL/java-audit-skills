@@ -1,289 +1,195 @@
-# SQL 注入检测规则详解
+# SQL 注入通用检测规则
 
-本文档提供通用的 SQL 注入检测策略，基于行为识别而非固定命名模式，覆盖多种数据库类型。
+本文件用于 `java-sql-audit` 已触发后加载，提供跨 JDBC、MyBatis、Hibernate/JPA 的通用判定方法。它不是漏洞知识教程；结论必须回到项目中的真实代码证据。
 
----
+## 结论证据模型
 
-## 核心原则
+每个 SQL 注入结论至少需要四类证据：
 
-**不要问"这个方法叫什么名字"，而要问"这个方法做了什么事情"**
+| 证据 | 必须回答的问题 | 不足时的结论 |
+|------|----------------|--------------|
+| 入口 | 参数从哪个路由、RPC、任务、消息或测试入口进入 | 只能做 sink 盘点或待验证 |
+| 可控性 | 参数是否由用户或外部输入控制，是否被覆盖、转换、枚举化 | 不可确认或非漏洞 |
+| SQL sink | 参数到达哪个真实 SQL/HQL/JPQL/native SQL 执行点 | 不得下 SQL 注入结论 |
+| 防护缺口 | 是否缺少参数绑定、闭合集合白名单或强类型约束 | 不得下漏洞结论 |
 
-| 错误方式（依赖命名） | 正确方式（识别行为） |
-|:---------------------|:---------------------|
-| 搜索 `addOrderBy()` 方法 | 搜索包含 `order by` 字符串拼接的代码 |
-| 搜索 `*Pagination*` 类 | 搜索包含分页逻辑的类 |
-| 检查 `page.getOrderBy()` | 检查任何 String 字段是否拼接到 SQL |
+推荐状态：
 
----
+| 状态 | 使用条件 |
+|------|----------|
+| 确认漏洞 | 四类证据完整，防护缺失，执行路径成立 |
+| 条件成立 | 四类证据基本完整，但依赖特定数据库、配置、角色或分支 |
+| 待验证 | 有 SQL 拼接和可能可控输入，但缺入口、环境或分支证据 |
+| 不可确认 | 只有命名、候选调用、缺失实现或无法读取的字节码 |
+| 非漏洞 | 参数不可控、被白名单/枚举/参数绑定保护，或路径不可达 |
 
-## 1. 行为检测策略
+状态必须用中文输出。不要把内部判断写成 `confirmed_vulnerable`、`not_vulnerable`、`unconfirmed`。
 
-### 1.1 SQL 关键字拼接检测
+一条映射行只能有一个状态。若同一 SQL 模板既包含已确认安全的命名参数，也包含来源未确认的动态条件片段，按动态片段的风险状态记录为“待验证”或“不可确认”，并在依据中说明命名参数部分安全；不要写“非漏洞；片段待补证”。
 
-**搜索 SQL 关键字与变量拼接的行为：**
+## 行为优先
 
-```bash
-# ORDER BY 拼接检测
-grep -ri "order by" --include="*.java" | grep -E "\+|\.append|format"
+不要只依赖类名、方法名或字段名。优先识别真实 SQL 行为：
 
-# GROUP BY 拼接检测
-grep -ri "group by" --include="*.java" | grep -E "\+|\.append|format"
+- SQL 字符串构建：`SELECT`、`UPDATE`、`DELETE`、`INSERT`、`WHERE`、`ORDER BY`、`GROUP BY`、`LIMIT`、`IN`。
+- 执行 API：`executeQuery`、`executeUpdate`、`execute`、`query`、`update`、`createQuery`、`createNativeQuery`。
+- Mapper 绑定：`${}`、`#{}`、`@Select`、`@Update`、`@Insert`、`@Delete`、`@*Provider`。
+- 动态片段：表名、列名、排序字段、排序方向、函数名、SQL 片段。
 
-# WHERE 条件拼接检测
-grep -ri "where.*=" --include="*.java" | grep -E "\+|\.append"
-
-# LIKE 拼接检测
-grep -ri "like\s" --include="*.java" | grep -E "\+|\.append"
-```
-
-### 1.2 危险行为特征
-
-| 危险行为 | 代码特征 | 检测正则 |
-|:---------|:---------|:---------|
-| 字符串拼接 | `"order by " + xxx` | `".*order by.*"\s*\+` |
-| StringBuilder | `.append("order by").append(xxx)` | `\.append\(.*order` |
-| String.format | `format("...%s", xxx)` | `format\(.*order by` |
-| MessageFormat | `MessageFormat.format()` | `MessageFormat\.format` |
-
-### 1.3 数据流追踪
-
-```
-步骤1: 识别所有 String 类型的类字段/方法参数
-步骤2: 追踪这些 String 是否被用于 SQL 拼接
-步骤3: 检查拼接前是否有白名单校验
-```
-
-**危险模式：**
-```java
-sql + variable           // String 拼接
-sql.append(variable)     // StringBuilder 拼接
-String.format(sql, var)  // 格式化拼接
-MessageFormat.format()   // 消息格式化
-```
-
-**安全模式：**
-```java
-pstmt.setString(1, var)              // 参数化查询
-if (whitelist.contains(var)) { }     // 白名单校验
-var.matches("[a-zA-Z_]+")            // 正则校验
-```
-
----
-
-## 2. 多数据库分页语法检测
-
-不同数据库使用不同的分页语法，检测时需全部覆盖：
-
-### 2.1 分页语法对比
-
-| 数据库 | 分页语法 | 检测关键字 |
-|:-------|:---------|:-----------|
-| MySQL | `LIMIT offset, count` | `limit` |
-| PostgreSQL | `LIMIT count OFFSET offset` | `limit`, `offset` |
-| Oracle | `ROWNUM`, `ROW_NUMBER()` | `rownum`, `row_number` |
-| SQL Server | `TOP`, `OFFSET FETCH` | `top`, `offset`, `fetch` |
-| DB2 | `FETCH FIRST n ROWS` | `fetch first`, `rows only` |
-| SQLite | `LIMIT count OFFSET offset` | `limit`, `offset` |
-
-### 2.2 分页检测命令
+可用搜索方向：
 
 ```bash
-# MySQL / PostgreSQL / SQLite
-grep -ri "limit\s" --include="*.java" | grep -v "//\|/\*"
-grep -ri "offset\s" --include="*.java" | grep -v "//\|/\*"
-
-# Oracle
-grep -ri "rownum\|row_number" --include="*.java"
-
-# SQL Server
-grep -ri "\stop\s\|offset.*fetch" --include="*.java"
-
-# DB2
-grep -ri "fetch first\|rows only" --include="*.java"
+rg -n "order\\s+by|group\\s+by|limit\\s|offset\\s|rownum|row_number" .
+rg -n "executeQuery|executeUpdate|prepareStatement|createStatement|JdbcTemplate|NamedParameterJdbcTemplate" .
+rg -n "createQuery|createNativeQuery|createSQLQuery|@Query|sqlRestriction" .
+rg -n "\\$\\{|#\\{|@Select|@Update|@Insert|@Delete|Provider" .
 ```
 
-### 2.3 分页拼接风险点
+搜索命中只是候选，不是漏洞结论。
 
-| 参数 | 可注入性 | 说明 |
-|:-----|:---------|:-----|
-| limit/count | 低 | 通常是 int 类型 |
-| offset/start | 低 | 通常是 int 类型 |
-| orderBy/sortColumn | **高** | String 类型，可注入 |
-| order/direction | **高** | String 类型，可注入 |
+`SQL 操作映射` 只记录真实 SQL sink 或候选 SQL sink。过滤器启用状态、框架版本、Spring import、数据源配置、数据库方言配置等上下文信息可以放在审计概述、候选依据或审计结论中，但不要作为 SQL 操作映射行，也不要计入非漏洞数量。
 
----
+正式报告只描述代码证据和证据缺口。反编译不足应写“本轮仅取得字节码检查证据，未取得源码级反编译结果”或“本轮未取得关键类可读实现/反编译方法体”，不要写网络受限、命令受限、工具下载失败、权限弹窗、模型规则编号或测试运行过程。
 
-## 3. 排序注入检测（高频漏报）
+class-heavy 项目不能因为只有 `.class` 就停止。若 `.class` 明显多于 `.java`，且已经发现 SQL 模板、DAO、Manager、Repository、Mapper 或 JdbcSupport 候选，应先做有界候选 class 检查，再决定是否输出不可确认。候选 class 检查至少回答：
 
-ORDER BY 注入是最容易被遗漏的 SQL 注入类型。
+- 哪些 class 与 SQL 模板或入口调用链直接相关。
+- 字节码或反编译结果中是否出现 SQL 执行 API、字符串拼接、formatter、参数绑定或白名单。
+- 仍缺少哪些证据才不能确认漏洞，例如入口参数到 SQL 字符串的完整数据流。
 
-### 3.1 各数据库 ORDER BY 语法
+## 高风险 SQL 位置
 
-| 数据库 | ORDER BY 语法 | 特殊注入点 |
-|:-------|:--------------|:-----------|
-| 通用 | `ORDER BY column ASC/DESC` | column 名称 |
-| Oracle | `ORDER BY column NULLS FIRST/LAST` | NULLS 处理 |
-| MySQL | `ORDER BY column` | 可用数字索引 |
-| PostgreSQL | `ORDER BY column USING operator` | USING 子句 |
+| 位置 | 风险原因 | 合格防护 |
+|------|----------|----------|
+| WHERE 值 | 用户值拼接可改变条件 | 参数绑定或强类型转换 |
+| LIKE 值 | 拼接引号和通配符易突破语义 | 参数绑定，将 `%` 放入绑定值 |
+| IN 列表 | 原始字符串可注入额外表达式 | 拆分校验后逐项绑定 |
+| ORDER BY/GROUP BY | 标识符无法用 `?` 绑定 | 闭合集合白名单或固定映射 |
+| 表名/列名 | 标识符无法参数化 | 闭合集合白名单 |
+| LIMIT/OFFSET | 字符串拼接仍可能改变语句 | 数值解析或绑定支持 |
+| native SQL/HQL 片段 | 直接进入执行器 | 参数绑定或严格映射 |
 
-### 3.2 检测命令
+## 可控性判定
 
-```bash
-# 搜索 order by 拼接
-grep -ri "order by" --include="*.java" | grep -E "\+|\.append|format"
+按以下顺序确认参数是否可控：
 
-# 搜索排序相关 getter（语义检测）
-grep -ri "\.get.*order\|\.get.*sort\|\.get.*by" --include="*.java" -i
+1. 参数来源：HTTP query/form/body、JSON 字段、path variable、header、cookie、RPC 参数、MQ 消息、上传文件元数据。
+2. 对象流转：DTO/VO/Bean 字段、Map key、数组/集合元素、分页对象、搜索对象。
+3. 中间处理：默认值覆盖、枚举映射、字典转换、`parseInt`/`parseLong`、正则校验、白名单过滤。
+4. 传递链：Controller/Action/Servlet/WebService -> Service -> DAO/Mapper/Repository -> SQL sink。
+5. 分支条件：角色、配置、数据库类型、租户、功能开关、空值判断、异常处理。
 
-# 搜索排序方向
-grep -ri "asc\|desc" --include="*.java" | grep -E "\+|\.append"
-```
+如果跨层证据不足，交给 `java-route-tracer` 追踪。不要凭 `save`、`query`、`getList` 等方法名推断数据流。
 
-### 3.3 危险模式示例
+公共 DAO、BaseDao、JdbcSupport、SqlBuilder 中的危险 sink 只能证明“底层执行器有风险形态”，不能单独证明某个 Web/RPC 入口可利用。确认漏洞至少要有一个具体入口到 sink 的端到端链路；若只看到入口把参数传给 Manager、另一个底层类存在拼接 sink，但缺少 Manager/DAO 中间层，状态应为“待验证”，不得输出 Burp Suite 请求或 payload。
 
-```java
-// 危险：直接拼接
-sql.append(" ORDER BY ").append(orderBy);
-sql.append(" ").append(order);
+## 防护判定
 
-// 危险：字符串拼接
-String sql = baseSql + " ORDER BY " + column + " " + direction;
+有效防护：
 
-// 危险：格式化
-String.format("%s ORDER BY %s %s", sql, orderBy, order);
-```
+- JDBC `PreparedStatement` 使用 `?` 并通过 `setXxx` 绑定用户值。
+- MyBatis `#{}` 用于值位置。
+- Hibernate/JPA 使用命名参数或位置参数并调用 `setParameter`。
+- 标识符位置使用固定枚举、Map 映射或闭合集合白名单。
+- 字符串输入先转换为数值、布尔、枚举，失败路径中断执行。
 
-### 3.4 安全模式示例
+不足防护：
 
-```java
-// 安全：白名单校验
-Set<String> allowedColumns = Set.of("id", "name", "create_time");
-Set<String> allowedOrders = Set.of("asc", "desc");
+- 只做非空、长度、trim、去引号、替换空格。
+- 黑名单过滤关键字、过滤 `'`、过滤 `--`。
+- 宽松正则允许点号、括号、逗号、空格、函数、运算符等 SQL 语义字符。
+- `PreparedStatement` 前已经把用户值拼进 SQL 结构。
+- MyBatis `${}` 直接接收外部字符串。
+- `StringEscapeUtils`、HTML escape、URL decode/encode 等非 SQL 参数化措施。
 
-if (!allowedColumns.contains(orderBy.toLowerCase())) {
-    throw new IllegalArgumentException("Invalid column");
-}
-if (!allowedOrders.contains(order.toLowerCase())) {
-    throw new IllegalArgumentException("Invalid order");
-}
-```
+## 执行条件
 
----
+发现 SQL 拼接后必须继续看是否会执行：
 
-## 4. 常见命名模式（仅作参考）
+- 数据库分支：`isOracle()`、`isMySQL()`、`dbType`、方言类、配置文件。
+- 早返回和异常：`return`、`throw`、空值短路、默认值覆盖。
+- 角色和功能开关：管理员入口、内网入口、租户配置、禁用功能。
+- 调用链可达性：候选方法是否被入口真实调用，是否只是测试/废弃代码。
+- 多态和接口：接口方法必须定位实现类；无法定位时标为不可确认。
 
-以下是常见命名，**但不能仅依赖这些模式检测**：
+`非漏洞` 需要积极证据，例如已读取实现并确认参数绑定、白名单、不可控或路径不可达。不能因为“未看到拼接”“同包代码风格通常使用 ORM”“框架名像 Hibernate”就写非漏洞。
 
-### 4.1 常见方法名
+## 字符串格式化边界
 
-| 方法名模式 | 行为特征（真正的检测依据） |
-|:-----------|:---------------------------|
-| `addOrderBy`, `appendSort`, `buildOrder` | 包含 `order by` 字符串拼接 |
-| `addGroupBy`, `appendGroup` | 包含 `group by` 字符串拼接 |
-| `addLimit`, `buildPagination`, `addPage` | 包含分页 SQL 拼接 |
-| `buildWhere`, `appendCondition` | 包含 WHERE 条件拼接 |
+不同 formatter 的占位符语义不同，必须看真实调用：
 
-### 4.2 常见类名
+| 调用 | 占位符 | 判定 |
+|------|--------|------|
+| `String.format("prefix %s suffix", value)` | `%s`/`%d` 等 | 会替换，按拼接分析 |
+| `String.format("prefix {0} suffix", value)` | `{0}` | Java 标准 `String.format` 不替换 `{0}`；不能据此判用户值进入 SQL |
+| `MessageFormat.format("prefix {0} suffix", value)` | `{0}` | 会替换，按拼接分析 |
+| 项目自定义 `StringUtils.format`、`SqlUtil.format` | 依实现而定 | 必须读取实现，不能按名称猜测 |
 
-| 类名模式 | 行为特征（真正的检测依据） |
-|:---------|:---------------------------|
-| `*Pagination*`, `*PageHelper*`, `*Pager*` | 包含分页 SQL 构建逻辑 |
-| `*Support*`, `*Template*`, `*Helper*` | 包含通用 SQL 执行方法 |
-| `Abstract*Dao*`, `Base*Dao*`, `*BaseMapper*` | 包含 SQL 执行的父类方法 |
-| `*SqlBuilder*`, `*QueryBuilder*` | 动态构建 SQL |
+SQL/XML 模板中的 `{0}`、`{1}` 只是候选。必须定位消费方和 formatter，确认参数来源后才能提升状态。
 
-### 4.3 常见字段名
+Spring XML SQL 模板的高价值检查顺序：
 
-| 字段名模式 | 类型 | 风险 |
-|:-----------|:-----|:-----|
-| `orderBy`, `sortBy`, `sortField`, `sortColumn` | String | **高** |
-| `order`, `sortOrder`, `direction`, `sortType` | String | **高** |
-| `groupBy`, `groupColumn`, `groupField` | String | **高** |
-| `limit`, `pageSize`, `size`, `count` | int | 低 |
-| `offset`, `start`, `firstResult`, `skip` | int | 低 |
+1. 提取模板 bean id 和占位符位置。
+2. 搜索源码、反编译结果、字节码常量池中对 bean id 的引用。
+3. 定位 `MessageFormat.format`、`String.format`、自定义 formatter、`getBean(beanId)`、字段注入或 setter 注入。
+4. 确认 formatter 入参数组中的值来自用户输入、会话服务端值、枚举常量还是配置常量。
+5. 确认格式化后的 SQL 是否直接进入 `createSQLQuery`、`JdbcTemplate`、`Statement`、`BaseDao.getListBySql` 或同类执行 API。
 
----
+若第 2 至第 5 步未完成，不要把模板本身写成确认漏洞；若完成且无绑定/白名单/强类型保护，应输出可复核 payload。
 
-## 5. 完整检测流程
+## 常见误判
 
-```
-1. 行为检测（必须执行）
-   ├─ 搜索 "order by" + 变量拼接
-   ├─ 搜索 "group by" + 变量拼接
-   ├─ 搜索各数据库分页语法拼接
-   ├─ 搜索 WHERE 条件动态拼接
-   └─ 追踪所有 String 参数到 SQL 的数据流
+- 将 `Manager.save(bean)` 写成 SQL sink，但没有实现源码或 Mapper XML。
+- 将所有 `${}` 都写成漏洞，忽略 Java 层固定映射。
+- 将 `PreparedStatement` 值绑定写成 SQL 注入。
+- 将日志输出的 SQL 字符串当作执行 SQL。
+- 忽略数据库类型分支，把只在未部署分支执行的拼接写成确认漏洞。
+- 把数值解析后的参数按字符串注入处理。
+- 没有入口和可控性证据，仅凭 DAO 方法拼接常量输出漏洞。
+- 未定位实现类，却按“同包风格”把下游 DAO/Manager 写成非漏洞。
+- 只确认底层公共 `JdbcSupport.addOrderBy` 或 `BaseDao.getListBySql` 存在拼接，却没有证明具体入口参数到达该方法，就写成确认漏洞。
+- 把 `String.format("prefix {0} suffix", value)` 当成 Java 会替换 `{0}` 的证据。
+- 引用不存在的反编译路径或未实际读取的文件作为确认漏洞证据。
+- 在报告中用三个连续英文句点省略代码、SQL、路径或关键证据；这会掩盖证据是否真实完整。
+- 在 Java varargs 签名中写 `Object...`；报告中应改写为 `Object[]/varargs` 或只写方法名，避免出现三个连续英文点号。
+- 用 `20+`、`60+`、范围数量或尾随加号描述入口数、方法数、行数或覆盖率；无法精确统计时写“未精确统计”。
+- 将 `SQLCheckFilter` 未启用、框架版本或配置导入关系写成 `SQL 操作映射` 的非漏洞行，导致统计数量和映射状态不一致。
+- 同一映射行同时写“非漏洞”和“待补证”，或表格序号跳号。
+- 在 SQL 报告中展开组件版本、CVE 扫描对象或 CVSS 事项；这些属于组件扫描边界。
 
-2. 命名模式辅助（可选加速）
-   ├─ 搜索常见方法名
-   ├─ 搜索常见类名
-   └─ 检查常见字段名
-   （找到后仍需验证行为特征）
+## 验证输出边界
 
-3. 白名单校验检查
-   ├─ 检查拼接前是否有 contains() 校验
-   ├─ 检查是否有允许值 Set/List
-   ├─ 检查是否有正则校验
-   └─ 检查是否有枚举限制
+确认漏洞和条件成立项必须给开发单位可复核材料；待验证、不可确认和非漏洞项不能包装成可复制攻击请求。
 
-4. 执行条件判断
-   ├─ 检查数据库类型分支（isOracle/isMySQL）
-   ├─ 检查代码路径是否存在可控参数
-   └─ 标注注入可达性（是/否）
-```
+允许输出 Burp Suite 请求和 payload 的前提：
 
----
+- 结论状态是“确认漏洞”或“条件成立”。
+- 已确认真实入口、HTTP 方法、参数名、Content-Type 和调用链。
+- 已确认用户输入到达 SQL sink，且防护缺口成立或在特定条件下成立。
+- payload 是低风险探测，只用于授权测试环境。
 
-## 6. 各数据库注入 Payload 参考
+禁止输出 Burp Suite 请求和 payload 的场景：
 
-### 6.1 通用 Payload
+- 只有 SQL 拼接候选，但缺入口或缺可控性。
+- 只有 Mapper XML、DAO 方法名、`UNCONFIRMED` sink 或未定位实现。
+- 结论状态是待验证、不可确认或非漏洞。
+- 需要猜测路由、参数名、Content-Type、鉴权态或数据库类型。
 
-| 注入类型 | Payload | 说明 |
-|:---------|:--------|:-----|
-| 错误注入 | `'` | 触发语法错误 |
-| 布尔盲注 | `1' AND '1'='1` | 条件为真 |
-| 注释截断 | `--`, `#`, `/* */` | 注释后续内容 |
+允许的低风险 payload 类别：
 
-### 6.2 Oracle 特有
+- 值位置：单引号、成对引号、非法字符、布尔条件差异探测等不会修改数据的最小 payload。
+- 数值位置：基线数值和只读布尔条件差异探测；已强类型解析时不要给字符串注入 payload。
+- 标识符位置：非法列名、非法排序方向、白名单外固定字符串，用于观察是否被拒绝。
+- `LIKE` 场景：不会抽取数据的特殊字符探测，优先配合 SQL 日志或断点观察最终 SQL 结构。
+- 结构控制探针：必要时可以使用 `OR 1=1`、WHERE 改写、注释符或受控堆叠语句证明 SQL 结构可控；涉及写操作时必须限定授权测试环境、最小样本、备份或事务回滚。
+- 短时间延迟探针：仅在普通错误/布尔差异不足以确认，且目标为授权测试环境时使用；延迟值应短且单请求验证，避免造成服务压力。
+- 最小回显/元数据探针：仅用于确认注入点能影响查询结构；优先使用常量回显或数据库元数据函数，不读取业务表、不枚举大量系统表、不输出真实敏感数据。
 
-| 注入类型 | Payload |
-|:---------|:--------|
-| 时间盲注 | `1' AND DBMS_PIPE.RECEIVE_MESSAGE('a',5)='a` |
-| UNION | `UNION SELECT NULL,NULL FROM DUAL--` |
-| 错误注入 | `1' AND 1=CTXSYS.DRITHSX.SN(1,'~')--` |
+禁止的 payload 类别：
 
-### 6.3 MySQL 特有
+- 缺少授权测试环境、最小样本、备份或事务回滚说明的 `INSERT`、`UPDATE`、`DELETE`、`DROP`、`ALTER`、`TRUNCATE` 等会修改结构或数据的语句。
+- 命令执行、文件读写、外带、DNS/OOB、批量枚举、业务数据批量抽取。
+- 长时间延迟、并发延迟、循环延迟或任何可能造成服务压力的探测。
+- 伪造 Burp 响应包、数据库错误或验证成功结果。
 
-| 注入类型 | Payload |
-|:---------|:--------|
-| 时间盲注 | `1' AND SLEEP(5)--` |
-| UNION | `UNION SELECT 1,2,3--` |
-| 错误注入 | `1' AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))--` |
-
-### 6.4 PostgreSQL 特有
-
-| 注入类型 | Payload |
-|:---------|:--------|
-| 时间盲注 | `1'; SELECT PG_SLEEP(5)--` |
-| 堆叠查询 | `1'; DROP TABLE test--` |
-| 错误注入 | `1' AND 1=CAST((SELECT version()) AS INT)--` |
-
-### 6.5 SQL Server 特有
-
-| 注入类型 | Payload |
-|:---------|:--------|
-| 时间盲注 | `1'; WAITFOR DELAY '0:0:5'--` |
-| 堆叠查询 | `1'; EXEC xp_cmdshell('whoami')--` |
-| 错误注入 | `1' AND 1=CONVERT(INT,@@VERSION)--` |
-
----
-
-## 7. 检测优先级
-
-| 优先级 | 检测目标 | 原因 |
-|:-------|:---------|:-----|
-| P0 | ORDER BY / GROUP BY 拼接 | 最常被遗漏，无法参数化 |
-| P1 | 动态表名/列名拼接 | 无法参数化，必须白名单 |
-| P2 | WHERE 条件拼接 | 常见漏洞点 |
-| P3 | LIKE 模糊查询拼接 | 需要特殊处理通配符 |
-| P4 | IN 子句动态拼接 | 需要正确使用 foreach |
+具体 Burp 请求和 payload 格式见 `VALIDATION_GUIDE.md`。报告中必须把验证说明限定为“仅限授权测试环境”，并写清预期观察是受控错误、结果差异、短延迟差异、最小回显差异、SQL 日志结构变化或白名单拒绝情况。

@@ -1,282 +1,158 @@
-# JDBC SQL 注入审计详解
+# JDBC SQL 注入审计规则
 
-## 目录
+在项目使用 `java.sql.*`、`DataSource`、`JdbcTemplate`、`NamedParameterJdbcTemplate` 或自定义 JDBC 封装时加载本文件。所有结论仍需满足 `SQL_DETECTION_RULES.md` 的入口、可控性、sink、防护四证据模型。
 
-- [JDBC 基础概念](#jdbc-基础概念)
-- [危险模式检测](#危险模式检测)
-- [安全模式识别](#安全模式识别)
-- [代码检查要点](#代码检查要点)
-- [常见漏洞场景](#常见漏洞场景)
+## 识别范围
 
----
+| 类型 | 关注点 |
+|------|--------|
+| `Statement` | SQL 字符串是否包含用户可控拼接 |
+| `PreparedStatement` | SQL 模板是否在 prepare 前已被拼接，值是否用 `setXxx` 绑定 |
+| `CallableStatement` | 存储过程名、参数和 SQL 片段是否拼接 |
+| `JdbcTemplate` | `query/update/execute` 的 SQL 参数是否拼接，是否使用参数数组 |
+| `NamedParameterJdbcTemplate` | 命名参数是否覆盖用户值，SQL 标识符是否仍拼接 |
+| 自定义 DAO/BaseDao | 包装方法内部是否执行拼接 SQL |
 
-## JDBC 基础概念
+## 危险模式
 
-### 核心类
-
-| 类 | 作用 | 参数化支持 |
-|---|------|-----------|
-| `Statement` | 执行静态 SQL | 不支持（高危注入点） |
-| `PreparedStatement` | 执行预编译 SQL | 支持（安全） |
-| `CallableStatement` | 执行存储过程 | 部分支持（取决于使用方式） |
-
-### 识别特征
+### Statement 执行拼接 SQL
 
 ```java
-// JDBC 导入
-import java.sql.Connection;
-import java.sql.Statement;
-import java.sql.PreparedStatement;
-import java.sql.DriverManager;
-import java.sql.ResultSet;
-```
-
----
-
-## 危险模式检测
-
-### 1. 字符串拼接（+ 号）
-
-```java
-// ❌ 高危：直接拼接用户输入
-String id = request.getParameter("id");
-String sql = "SELECT * FROM users WHERE id = " + id;
-Statement stmt = conn.createStatement();
-ResultSet rs = stmt.executeQuery(sql);
-
-// ❌ 高危：拼接字符串参数
-String name = request.getParameter("name");
 String sql = "SELECT * FROM users WHERE name = '" + name + "'";
-```
-
-**检测正则：**
-```regex
-(executeQuery|executeUpdate|execute)\s*\(\s*[^)]*\+
-```
-
-### 2. StringBuilder/StringBuffer 拼接
-
-```java
-// ❌ 高危：使用 StringBuilder 构建 SQL
-StringBuilder sb = new StringBuilder();
-sb.append("SELECT * FROM users WHERE name = '");
-sb.append(name);
-sb.append("'");
-stmt.executeQuery(sb.toString());
-
-// ❌ 高危：使用 StringBuffer
-StringBuffer sql = new StringBuffer("DELETE FROM users WHERE id = ");
-sql.append(userId);
-stmt.executeUpdate(sql.toString());
-```
-
-**检测正则：**
-```regex
-(StringBuilder|StringBuffer).*append.*execute
-```
-
-### 3. String.format 拼接
-
-```java
-// ❌ 高危：使用 String.format
-String sql = String.format("SELECT * FROM users WHERE id = %s", id);
+Statement stmt = conn.createStatement();
 stmt.executeQuery(sql);
-
-// ❌ 高危：使用 MessageFormat
-String sql = MessageFormat.format("SELECT * FROM users WHERE id = {0}", id);
 ```
 
-### 4. concat 方法拼接
+成立条件：
+
+- `name` 来自用户或外部输入。
+- 没有强类型转换、闭合集合白名单或其他能消除 SQL 语义的处理。
+- 该方法可由入口调用到。
+
+### PreparedStatement 之前已拼接
 
 ```java
-// ❌ 高危：使用 concat
-String sql = "SELECT * FROM users WHERE id = ".concat(id);
-```
-
----
-
-## 安全模式识别
-
-### 1. PreparedStatement + 占位符
-
-```java
-// ✅ 安全：使用 ? 占位符
-String sql = "SELECT * FROM users WHERE id = ?";
-PreparedStatement pstmt = conn.prepareStatement(sql);
-pstmt.setInt(1, userId);  // 参数绑定
-ResultSet rs = pstmt.executeQuery();
-
-// ✅ 安全：多参数绑定
-String sql = "SELECT * FROM users WHERE name = ? AND age = ?";
-PreparedStatement pstmt = conn.prepareStatement(sql);
-pstmt.setString(1, name);
-pstmt.setInt(2, age);
-```
-
-### 2. 参数类型方法
-
-| 方法 | 数据类型 |
-|------|----------|
-| `setInt(index, value)` | 整数 |
-| `setString(index, value)` | 字符串 |
-| `setLong(index, value)` | 长整数 |
-| `setDouble(index, value)` | 浮点数 |
-| `setDate(index, value)` | 日期 |
-| `setTimestamp(index, value)` | 时间戳 |
-| `setObject(index, value)` | 对象 |
-
----
-
-## 代码检查要点
-
-### 检查流程
-
-```
-1. 搜索所有 Statement/PreparedStatement 使用
-     ↓
-2. 检查 SQL 字符串构建方式
-     ↓
-3. 追踪参数来源（是否用户可控）
-     ↓
-4. 判断是否使用参数化
-     ↓
-5. 标记风险等级
-```
-
-### 搜索关键字
-
-```bash
-# 查找 SQL 执行点
-grep -rn "executeQuery\|executeUpdate\|execute(" --include="*.java"
-
-# 查找 Statement 创建
-grep -rn "createStatement\|prepareStatement" --include="*.java"
-
-# 查找字符串拼接
-grep -rn "\"SELECT\|\"INSERT\|\"UPDATE\|\"DELETE" --include="*.java" | grep "+"
-```
-
-### 漏洞判断矩阵
-
-| Statement 类型 | SQL 构建方式 | 参数来源 | 注入判定结果 |
-|---------------|-------------|----------|------------|
-| Statement | 字符串拼接 | 用户输入 | **高危注入点** |
-| Statement | 字符串拼接 | 硬编码 | 无注入风险 |
-| PreparedStatement | 占位符 | 用户输入 | 安全 |
-| PreparedStatement | 拼接 + 占位符混用 | 用户输入 | **高危注入点** |
-
----
-
-## 常见漏洞场景
-
-### 场景 1：动态表名/列名
-
-```java
-// ❌ 高危：动态表名无法使用占位符
-String table = request.getParameter("table");
-String sql = "SELECT * FROM " + table;  // 无法参数化
-
-// ⚠️ 必须白名单校验
-String table = request.getParameter("table");
-if (!ALLOWED_TABLES.contains(table)) {
-    throw new IllegalArgumentException("Invalid table");
-}
-String sql = "SELECT * FROM " + table;
-```
-
-### 场景 2：ORDER BY 子句
-
-```java
-// ❌ 高危：ORDER BY 无法使用占位符
-String orderBy = request.getParameter("sort");
 String sql = "SELECT * FROM users ORDER BY " + orderBy;
-
-// ⚠️ 必须白名单校验
-String orderBy = request.getParameter("sort");
-if (!ALLOWED_COLUMNS.contains(orderBy)) {
-    orderBy = "id";  // 默认值
-}
-String sql = "SELECT * FROM users ORDER BY " + orderBy;
+PreparedStatement ps = conn.prepareStatement(sql);
 ```
 
-### 场景 3：IN 子句
+`PreparedStatement` 只能保护绑定值，不能保护已经拼进 SQL 结构的表名、列名、排序方向或 SQL 片段。
+
+### StringBuilder/StringBuffer 动态构造
 
 ```java
-// ❌ 高危：IN 子句拼接
-String ids = request.getParameter("ids");  // "1,2,3"
-String sql = "SELECT * FROM users WHERE id IN (" + ids + ")";
+StringBuilder sql = new StringBuilder("SELECT * FROM user WHERE 1=1");
+if (keyword != null) {
+    sql.append(" AND name LIKE '%").append(keyword).append("%'");
+}
+stmt.executeQuery(sql.toString());
+```
 
-// ✅ 安全：动态生成占位符
-String[] idArray = ids.split(",");
-String placeholders = String.join(",", Collections.nCopies(idArray.length, "?"));
+审计时要追踪每个 `.append()` 的来源和执行条件，不要只看最终 `executeQuery` 行。
+
+### 格式化和 concat
+
+```java
+String sql = String.format("SELECT * FROM %s WHERE id = %s", table, id);
+String sql2 = "DELETE FROM t WHERE id = ".concat(id);
+```
+
+`String.format`、`MessageFormat`、`concat` 与 `+` 拼接都可能等价，但必须先确认占位符语义：
+
+- `String.format` 只替换 `%s`、`%d` 等 Java format specifier。
+- `String.format("prefix {0} suffix", value)` 不会替换 `{0}`，不能据此判定用户值进入 SQL。
+- `MessageFormat.format("prefix {0} suffix", value)` 会替换 `{0}`。
+- 自定义 formatter 必须读取实现后再判定。
+
+XML 或 Spring bean 中的 `{0}` 模板只有在定位到真实消费方和 formatter 后，才能从候选风险提升为“确认漏洞”或“条件成立”。
+
+### JdbcTemplate 拼接
+
+```java
+jdbcTemplate.query("SELECT * FROM user WHERE name = '" + name + "'", mapper);
+```
+
+危险点在 SQL 字符串本身。`JdbcTemplate` 不是天然安全，只有使用占位符和参数数组/参数列表时才保护值。
+
+## 安全模式
+
+### 值绑定
+
+```java
+String sql = "SELECT * FROM users WHERE name = ?";
+PreparedStatement ps = conn.prepareStatement(sql);
+ps.setString(1, name);
+```
+
+或：
+
+```java
+jdbcTemplate.query(
+    "SELECT * FROM users WHERE name = ?",
+    new Object[] { name },
+    mapper
+);
+```
+
+安全前提：
+
+- 用户值只进入 `?` 或命名参数。
+- SQL 模板中的标识符和结构不是用户可控拼接。
+- 绑定参数数量和位置能对应 SQL 占位符。
+
+### 动态 IN 列表
+
+安全做法通常是拆分、校验并生成对应数量的占位符：
+
+```java
+String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
 String sql = "SELECT * FROM users WHERE id IN (" + placeholders + ")";
-PreparedStatement pstmt = conn.prepareStatement(sql);
-for (int i = 0; i < idArray.length; i++) {
-    pstmt.setInt(i + 1, Integer.parseInt(idArray[i]));
-}
 ```
 
-### 场景 4：LIKE 子句
+仅生成占位符本身一般安全；仍要确认每个 `id` 是否使用 `setXxx` 绑定，且列表长度有合理限制。
+
+### 动态标识符白名单
 
 ```java
-// ❌ 高危：LIKE 拼接
-String keyword = request.getParameter("keyword");
-String sql = "SELECT * FROM users WHERE name LIKE '%" + keyword + "%'";
-
-// ✅ 安全：LIKE 使用占位符
-String sql = "SELECT * FROM users WHERE name LIKE ?";
-PreparedStatement pstmt = conn.prepareStatement(sql);
-pstmt.setString(1, "%" + keyword + "%");  // 通配符在参数中
+Map<String, String> columns = Map.of("name", "user_name", "time", "created_at");
+String column = columns.get(input);
+if (column == null) {
+    throw new IllegalArgumentException("invalid sort");
+}
+String sql = "SELECT * FROM users ORDER BY " + column;
 ```
 
-### 场景 5：批量操作
+表名、列名、排序方向、函数名不能用 `?` 绑定；必须是闭合集合映射。报告中要列出白名单来源。
 
-```java
-// ❌ 高危：批量 SQL 拼接
-for (String id : ids) {
-    String sql = "DELETE FROM users WHERE id = " + id;
-    stmt.addBatch(sql);
-}
-stmt.executeBatch();
+## 检查步骤
 
-// ✅ 安全：批量使用 PreparedStatement
-String sql = "DELETE FROM users WHERE id = ?";
-PreparedStatement pstmt = conn.prepareStatement(sql);
-for (String id : ids) {
-    pstmt.setString(1, id);
-    pstmt.addBatch();
-}
-pstmt.executeBatch();
-```
+1. 搜索 `createStatement`、`prepareStatement`、`executeQuery`、`executeUpdate`、`execute`、`JdbcTemplate`。
+2. 对每个 SQL 字符串回溯构造过程，记录常量片段和变量片段。
+3. 对变量片段追踪入口来源和中间处理。
+4. 检查是否有 `setXxx`、参数数组、命名参数或闭合集合白名单。
+5. 检查调用链、分支和环境条件。
+6. 将每个执行点写入 SQL 操作映射表，安全点也要说明依据。
 
----
+## 判定矩阵
 
-## 修复要求
+| SQL 构造 | 参数来源 | 防护 | 结论 |
+|----------|----------|------|------|
+| `Statement` + 用户值拼接 | 外部可控 | 无 | 确认漏洞或条件成立 |
+| `Statement` + 常量 SQL | 不可控 | 不适用 | 非漏洞 |
+| `PreparedStatement` + `?` | 外部可控值 | `setXxx` 绑定 | 非漏洞 |
+| `PreparedStatement` + 拼接标识符 | 外部可控 | 无白名单 | 确认漏洞/条件成立 |
+| `PreparedStatement` + 拼接标识符 | 外部可控 | 闭合集合白名单 | 非漏洞或加固建议 |
+| `JdbcTemplate` + SQL 拼接 | 外部可控 | 无 | 确认漏洞/条件成立 |
+| `JdbcTemplate` + 占位符参数 | 外部可控值 | 参数数组/列表 | 非漏洞 |
 
-### 必须遵守的规范
+## 输出证据要点
 
-1. **始终使用 PreparedStatement**，避免 Statement
-2. **使用 ? 占位符**，避免字符串拼接
-3. **动态标识符使用白名单**（表名、列名、ORDER BY）
-4. **输入验证作为补充**，不能替代参数化
+每个 JDBC 风险项至少包含：
 
-### 代码示例
-
-```java
-// 修复前（危险）
-public User findById(String id) {
-    String sql = "SELECT * FROM users WHERE id = " + id;
-    Statement stmt = conn.createStatement();
-    ResultSet rs = stmt.executeQuery(sql);
-    // ...
-}
-
-// 修复后（安全）
-public User findById(String id) {
-    String sql = "SELECT * FROM users WHERE id = ?";
-    PreparedStatement pstmt = conn.prepareStatement(sql);
-    pstmt.setString(1, id);
-    ResultSet rs = pstmt.executeQuery();
-    // ...
-}
-```
+- SQL 构造代码位置。
+- 执行 API 代码位置。
+- 用户参数来源和调用链。
+- 拼接变量在 SQL 中的位置。
+- 是否有 `setXxx`、参数数组或白名单。
+- 分支/数据库/配置条件。
+- 结论状态和限制说明。
