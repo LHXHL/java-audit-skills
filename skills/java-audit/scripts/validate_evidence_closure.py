@@ -11,6 +11,8 @@ from pathlib import Path
 
 CANDIDATE_RE = re.compile(r"VULN-CAND-\d{3}")
 FINAL_STATES = {"确认", "降级", "放弃"}
+DEEP_AUDIT_STATUSES = {"[x]", "[?]"}
+REASON_REQUIRED_STATUSES = {"[-]", "[!]"}
 
 
 def split_markdown_row(line: str) -> list[str]:
@@ -87,17 +89,31 @@ def validate_closure(workspace: Path) -> list[str]:
     for index, row in enumerate(rows, start=1):
         vuln_family = row.get("漏洞族", f"第 {index} 行")
         status = row.get("状态", "")
+        basis = row.get("初筛依据", "")
+        next_step = row.get("下一步", "")
         candidate_summary = row.get("发现的具体候选", "")
         candidate_id_cell = row.get("候选 ID", "")
         candidate_ids = sorted(set(CANDIDATE_RE.findall(candidate_id_cell)))
 
-        if status != "[x]":
+        if status == "[ ]":
+            errors.append(f"{vuln_family} 仍为 [ ] 未检查状态，最终报告前必须闭环")
+            continue
+
+        if status in REASON_REQUIRED_STATUSES:
+            if is_blank_or_placeholder(basis):
+                errors.append(f"{vuln_family} 标记 {status}，但缺少初筛依据")
+            if is_blank_or_placeholder(next_step):
+                errors.append(f"{vuln_family} 标记 {status}，但缺少下一步/处理说明")
+            continue
+
+        if status not in DEEP_AUDIT_STATUSES:
+            errors.append(f"{vuln_family} 状态非法或不受支持: {status}")
             continue
 
         if is_blank_or_placeholder(candidate_summary):
-            errors.append(f"{vuln_family} 标记 [x]，但没有填写发现的具体候选")
+            errors.append(f"{vuln_family} 标记 {status}，但没有填写发现的具体候选")
         if not candidate_ids:
-            errors.append(f"{vuln_family} 标记 [x]，但没有记录 VULN-CAND 候选 ID")
+            errors.append(f"{vuln_family} 标记 {status}，但没有记录 VULN-CAND 候选 ID")
             continue
 
         for candidate_id in candidate_ids:
