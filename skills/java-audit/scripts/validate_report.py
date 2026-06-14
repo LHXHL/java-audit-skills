@@ -9,14 +9,29 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_SECTIONS = [
+VULN_SECTIONS = [
     "## 1. 审计概述",
     "## 2. 确认漏洞",
     "## 3. 高风险线索 / 下一步人工验证",
     "## 4. 覆盖范围与限制",
 ]
 
-REQUIRED_FIELDS = [
+ROUTE_SECTIONS = [
+    "## 1. 梳理概述",
+    "## 2. 路由汇总",
+    "## 3. 路由详情",
+    "## 4. 覆盖范围与限制",
+]
+
+AUTH_SECTIONS = [
+    "## 1. 梳理概述",
+    "## 2. 鉴权机制",
+    "## 3. 路由/入口鉴权映射",
+    "## 4. 风险观察与待确认项",
+    "## 5. 覆盖范围与限制",
+]
+
+VULN_FIELDS = [
     "- 严重等级:",
     "- 受影响入口:",
     "- 参数来源:",
@@ -64,13 +79,21 @@ def vulnerability_blocks(confirmed_body: str) -> list[str]:
     return blocks
 
 
-def validate(path: Path) -> list[str]:
-    errors: list[str] = []
-    text = path.read_text(encoding="utf-8")
+def detect_report_type(text: str) -> str:
+    names = section_names(text)
+    if names == VULN_SECTIONS:
+        return "vuln"
+    if names == ROUTE_SECTIONS:
+        return "route"
+    if names == AUTH_SECTIONS:
+        return "auth"
+    return "unknown"
 
-    if "【" in text or "】" in text:
-        errors.append("报告仍包含模板占位符")
-    if section_names(text) != REQUIRED_SECTIONS:
+
+def validate_vuln(text: str) -> list[str]:
+    errors: list[str] = []
+
+    if section_names(text) != VULN_SECTIONS:
         errors.append(f"章节不匹配: {section_names(text)!r}")
 
     confirmed = section_body(text, "## 2. 确认漏洞")
@@ -86,7 +109,7 @@ def validate(path: Path) -> list[str]:
         title = block.splitlines()[0]
         if not re.search(r"^###\s+VULN-\d{3}\s+", title):
             errors.append(f"漏洞标题编号格式错误: {title}")
-        for field in REQUIRED_FIELDS:
+        for field in VULN_FIELDS:
             if field not in block:
                 errors.append(f"{title} 缺少字段: {field}")
         if "```http" not in block:
@@ -101,12 +124,68 @@ def validate(path: Path) -> list[str]:
     return errors
 
 
+def validate_route(text: str) -> list[str]:
+    errors: list[str] = []
+    if section_names(text) != ROUTE_SECTIONS:
+        errors.append(f"章节不匹配: {section_names(text)!r}")
+    summary = section_body(text, "## 2. 路由汇总")
+    details = section_body(text, "## 3. 路由详情")
+    for header in ["| 类型 | 数量 | 说明 |", "| 编号 | HTTP 方法 | 路径/入口 | Handler | 参数 | 鉴权线索 | 证据位置 | 备注 |"]:
+        if header not in text:
+            errors.append(f"缺少表格: {header}")
+    if "ROUTE-" not in details and "未发现路由" not in details:
+        errors.append("路由详情既没有 ROUTE 编号，也没有写明未发现路由")
+    if re.search(r"(大约|约|若干|~\s*\d+)", summary):
+        errors.append("路由统计包含不精确数量")
+    return errors
+
+
+def validate_auth(text: str) -> list[str]:
+    errors: list[str] = []
+    if section_names(text) != AUTH_SECTIONS:
+        errors.append(f"章节不匹配: {section_names(text)!r}")
+    for header in [
+        "| 编号 | 类型 | 实现位置 | 关键规则 | 证据位置 | 备注 |",
+        "| 编号 | 路由/入口 | HTTP 方法 | Handler | 鉴权状态 | 权限要求 | 证据位置 | 备注 |",
+        "| 编号 | 观察 | 当前证据 | 缺失证据 | 下一步 |",
+    ]:
+        if header not in text:
+            errors.append(f"缺少表格: {header}")
+    mapping = section_body(text, "## 3. 路由/入口鉴权映射")
+    if "MAP-" not in mapping and "未发现" not in mapping:
+        errors.append("鉴权映射既没有 MAP 编号，也没有写明未发现映射")
+    if "未授权漏洞" in text or "确认漏洞" in text:
+        errors.append("鉴权梳理报告不得直接写确认漏洞结论")
+    return errors
+
+
+def validate(path: Path, report_type: str) -> list[str]:
+    text = path.read_text(encoding="utf-8")
+    errors: list[str] = []
+
+    if "【" in text or "】" in text:
+        errors.append("报告仍包含模板占位符")
+
+    resolved_type = detect_report_type(text) if report_type == "auto" else report_type
+    if resolved_type == "vuln":
+        errors.extend(validate_vuln(text))
+    elif resolved_type == "route":
+        errors.extend(validate_route(text))
+    elif resolved_type == "auth":
+        errors.extend(validate_auth(text))
+    else:
+        errors.append(f"无法识别报告类型，章节为: {section_names(text)!r}")
+
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="校验 java-audit Markdown 报告")
     parser.add_argument("report", type=Path)
+    parser.add_argument("--type", choices=["auto", "vuln", "route", "auth"], default="auto", help="报告类型")
     args = parser.parse_args()
 
-    errors = validate(args.report)
+    errors = validate(args.report, args.type)
     if errors:
         for error in errors:
             print(f"[FAIL] {error}", file=sys.stderr)

@@ -1,26 +1,27 @@
 # Java Audit Skill
 
-本仓库提供一个中文 `java-audit` Skill，用于标准化 Java 快速漏洞审计的流程、工程目录、反编译工具调用、证据门槛和 Markdown 报告格式。
+本仓库提供一个中文 `java-audit` Skill，用于标准化 Java 快速漏洞审计、路由信息梳理、鉴权信息梳理的流程、工程目录、反编译工具调用、证据门槛和 Markdown 报告格式。
 
-新版不再维护旧的多 Skill 体系，也不把路由枚举、组件扫描或专项漏洞知识拆成多个入口。`java-audit` 的核心职责是让 AI 在审计具体 Java 目标时保持稳定流程：先建立工作目录，必要时用 CFR 反编译，再基于代码证据确认漏洞，最后输出可复现的报告。
+新版不再维护旧的多 Skill 体系，也不把路由枚举、鉴权梳理、组件扫描或专项漏洞知识拆成多个入口。`java-audit` 的核心职责是让 AI 在处理具体 Java 目标时保持稳定流程：先建立工作目录，必要时用 CFR 反编译，再按用户意图输出漏洞、路由或鉴权报告。
 
 ## 适用场景
 
 - 审计 Java 源码目录、单模块、JAR/WAR/class、反编译产物、diff 或混合材料。
 - 快速寻找真实可利用漏洞，只输出满足证据门槛的确认漏洞。
+- 梳理当前源码的路由信息、接口入口、Handler、参数和证据位置。
+- 梳理当前源码的鉴权信息、认证授权机制、权限配置和路由鉴权映射。
 - 需要 payload 和 BurpSuite Repeater 可用的原始 HTTP 请求包。
 - 需要把工具、临时脚本、反编译结果、证据、日志和报告统一放入审计工作目录。
 
 ## 不适用场景
 
-- 只整理路由清单或接口文档。
 - 只解释 Java 代码、修业务 bug 或写安全培训材料。
 - 只生成 Semgrep/CodeQL/规则库。
 - 对非授权线上目标发起扫描、爆破或破坏性验证。
 
 ## 如何使用
 
-在支持 Skills 的环境中，直接用 `$java-audit` 指向具体 Java 审计目标，并说明你需要“快速审计”“确认漏洞”“payload”或“BurpSuite 原始请求包”。
+在支持 Skills 的环境中，直接用 `$java-audit` 指向具体 Java 目标，并说明你需要“快速审计”“确认漏洞”“路由信息”“鉴权信息”“payload”或“BurpSuite 原始请求包”。
 
 ```text
 使用 $java-audit 审计 /path/to/project，只输出确认漏洞，并给出 payload 和 BurpSuite 原始 HTTP 请求包。
@@ -34,13 +35,22 @@
 使用 $java-audit 分析这个 Java diff 是否引入真实可利用漏洞；不能确认的内容放入高风险线索。
 ```
 
+```text
+使用 $java-audit 帮我梳理当前源码的路由信息，输出 Markdown 路由报告。
+```
+
+```text
+使用 $java-audit 帮我梳理当前源码下的鉴权信息，包括认证机制、权限配置和路由鉴权映射。
+```
+
 典型执行流程：
 
 1. AI 识别输入类型：源码、JAR/WAR/class、反编译产物、模块、diff 或混合材料。
 2. AI 创建 `java-audit-workspace/`，并把工具、反编译结果、日志、证据和报告都放进去。
 3. 如果目标是 JAR/WAR/class，AI 下载 CFR 并通过 CLI 反编译。
-4. AI 基于代码证据做 source-to-sink 审计，只把满足六项验收标准的内容写入“确认漏洞”。
-5. AI 输出 Markdown 报告，并用校验脚本检查报告边界。
+4. AI 按用户意图选择报告类型：漏洞审计、路由信息梳理或鉴权信息梳理。
+5. 漏洞审计只把满足六项验收标准的内容写入“确认漏洞”；路由/鉴权报告只写可由代码或配置证明的信息。
+6. AI 输出 Markdown 报告，并用校验脚本检查报告边界。
 
 ## 目录结构
 
@@ -96,10 +106,12 @@ java -jar cfr-0.152.jar <target.jar|target.war|target.class> --outputdir <output
 生成报告后建议运行：
 
 ```bash
-python3 skills/java-audit/scripts/validate_report.py /path/to/report.md
+python3 skills/java-audit/scripts/validate_report.py /path/to/report.md --type vuln
+python3 skills/java-audit/scripts/validate_report.py /path/to/route_report.md --type route
+python3 skills/java-audit/scripts/validate_report.py /path/to/auth_report.md --type auth
 ```
 
-校验器会检查章节、占位符、确认漏洞必填字段、BurpSuite 原始 HTTP 请求包，以及“疑似/待验证”内容是否误入确认漏洞区。
+校验器会检查章节、占位符和报告边界。漏洞报告会额外检查确认漏洞必填字段、BurpSuite 原始 HTTP 请求包，以及“疑似/待验证”内容是否误入确认漏洞区。
 
 ## 安全边界
 
