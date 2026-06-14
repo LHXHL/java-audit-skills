@@ -19,10 +19,22 @@
 
 因此，现在的 Skill 更应该偏向“架构化设计”，而不是“说明书式堆内容”。它只需要明确目标、边界、原则、工具和关键流程，把具体判断和执行交给模型根据上下文完成。模型越强，Skill 越应该轻量、清晰、可扩展，而不是用过时内容束缚模型。
 
+## 安装
+
+将本仓库中的 `skills/java-audit/` 整个目录放置到 Cloud 或 Codex 可识别的 `.skills/` 目录下，目录名保持为 `java-audit`：
+
+```text
+.skills/
+└── java-audit/
+    ├── SKILL.md
+    ├── config.json
+    ├── references/
+    └── scripts/
+```
 
 ## 如何使用
 
-在支持 Skills 的环境中，直接用 `$java-audit` 指向具体 Java 目标，并说明你需要“快速审计”“确认漏洞”“路由信息”“鉴权信息”“payload”或“BurpSuite 原始请求包”。
+安装后，在支持 Skills 的 Cloud 或 Codex 环境中，可以用 `$java-audit` 显式触发；也可以用“审计这个 Java 项目”“梳理当前源码路由”“梳理鉴权信息”等自然语言触发。显式使用 `$java-audit` 更稳定。
 
 ```text
 使用 $java-audit 审计 /path/to/project，只输出确认漏洞，并给出 payload 和 BurpSuite 原始 HTTP 请求包。
