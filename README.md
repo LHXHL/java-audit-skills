@@ -37,23 +37,31 @@
 安装后，在支持 Skills 的 Cloud 或 Codex 环境中，可以用 `$java-audit` 显式触发；也可以用“审计这个 Java 项目”“梳理当前源码路由”“梳理鉴权信息”等自然语言触发。显式使用 `$java-audit` 更稳定。
 
 ```text
-使用 $java-audit 审计 /path/to/project，只输出确认漏洞，并给出 payload 和 BurpSuite 原始 HTTP 请求包。
+使用 /java-audit 审计 /path/to/project，只输出确认漏洞，并给出 payload 和 BurpSuite 原始 HTTP 请求包。
 ```
 
 ```text
-使用 $java-audit 对 /path/to/app.war 先反编译再快速审计，所有工具、临时文件和报告都放到审计工作目录。
+使用 /java-audit 对 /path/to/app.war 先反编译再快速审计，所有工具、临时文件和报告都放到审计工作目录。
 ```
 
 ```text
-使用 $java-audit 分析这个 Java diff 是否引入真实可利用漏洞；不能确认的内容放入高风险线索。
+使用 /java-audit 分析这个 Java diff 是否引入真实可利用漏洞；不能确认的内容放入高风险线索。
 ```
 
 ```text
-使用 $java-audit 帮我梳理当前源码的路由信息，输出 Markdown 路由报告。
+使用 /java-audit 帮我梳理当前源码的路由信息，输出 Markdown 路由报告。
 ```
 
 ```text
-使用 $java-audit 帮我梳理当前源码下的鉴权信息，包括认证机制、权限配置和路由鉴权映射。
+使用 /java-audit 帮我梳理当前源码下的鉴权信息，包括认证机制、权限配置和路由鉴权映射。
+```
+
+```text
+使用 /java-audit 帮我梳理当前源码下的是否存在SQL注入漏洞。
+```
+
+```text
+使用 /java-audit 帮我梳理当前源码下的是否存在可以拿到shell权限的漏洞。
 ```
 
 典型执行流程：
