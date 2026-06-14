@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,9 @@ class QueryGroup:
     mapped_families: tuple[str, ...]
     priority: str
     patterns: tuple[str, ...]
+
+
+SKIP_DIR_NAMES = {"tools", "logs", "reports", "evidence"}
 
 
 QUERY_GROUPS: tuple[QueryGroup, ...] = (
@@ -249,6 +253,41 @@ def candidate_sources(workspace: Path, explicit_sources: list[Path]) -> list[Pat
     return [path.resolve() for path in defaults if path.exists()]
 
 
+def iter_source_files(sources: list[Path]):
+    for source in sources:
+        if source.is_file():
+            yield source
+            continue
+        for path in source.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in SKIP_DIR_NAMES for part in path.relative_to(source).parts[:-1]):
+                continue
+            yield path
+
+
+def run_python_regex(pattern: str, sources: list[Path], max_hits: int) -> list[tuple[str, str, str]]:
+    try:
+        regex = re.compile(pattern, flags=re.IGNORECASE)
+    except re.error as exc:
+        raise RuntimeError(f"Python regex 编译失败: {pattern}: {exc}") from exc
+
+    hits: list[tuple[str, str, str]] = []
+    for path in iter_source_files(sources):
+        if len(hits) >= max_hits:
+            break
+        try:
+            text = path.read_bytes().decode("latin-1", errors="ignore")
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if regex.search(line):
+                hits.append((str(path), str(line_no), line.strip()))
+                if len(hits) >= max_hits:
+                    break
+    return hits
+
+
 def run_rg(rg_bin: str, pattern: str, sources: list[Path], max_hits: int) -> list[tuple[str, str, str]]:
     command = [
         rg_bin,
@@ -283,6 +322,32 @@ def run_rg(rg_bin: str, pattern: str, sources: list[Path], max_hits: int) -> lis
             continue
         hits.append((parts[0], parts[1], parts[2]))
     return hits
+
+
+def resolve_engine(requested: str) -> tuple[str, str | None]:
+    if requested == "python":
+        return "python", None
+
+    rg_bin = shutil.which("rg")
+    if requested == "rg":
+        if not rg_bin:
+            raise RuntimeError("未找到 rg；请改用 --engine python，或安装 ripgrep")
+        return "rg", rg_bin
+
+    if requested == "auto":
+        if rg_bin:
+            return "rg", rg_bin
+        return "python", None
+
+    raise RuntimeError(f"未知检索引擎: {requested}")
+
+
+def run_query(engine: str, engine_bin: str | None, pattern: str, sources: list[Path], max_hits: int) -> list[tuple[str, str, str]]:
+    if engine == "rg":
+        if not engine_bin:
+            raise RuntimeError("rg 引擎缺少可执行路径")
+        return run_rg(engine_bin, pattern, sources, max_hits)
+    return run_python_regex(pattern, sources, max_hits)
 
 
 def select_query_groups(selected: list[str]) -> tuple[QueryGroup, ...]:
@@ -359,6 +424,7 @@ def main() -> int:
     parser.add_argument("--source", type=Path, action="append", default=[], help="额外检索源码或反编译目录，可重复")
     parser.add_argument("--group", action="append", default=[], help="只运行指定查询组 slug，可重复")
     parser.add_argument("--list-groups", action="store_true", help="列出查询组后退出")
+    parser.add_argument("--engine", choices=["python", "auto", "rg"], default="python", help="检索引擎；默认 python 不依赖外部命令")
     parser.add_argument("--max-hits-per-query", type=int, default=200, help="单个查询模式最多记录命中数")
     args = parser.parse_args()
 
@@ -373,9 +439,10 @@ def main() -> int:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
-    rg_bin = shutil.which("rg")
-    if not rg_bin:
-        print("[FAIL] 未找到 rg，请先安装 ripgrep 后再运行 Query Pack", file=sys.stderr)
+    try:
+        engine, engine_bin = resolve_engine(args.engine)
+    except RuntimeError as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
 
     workspace = args.workspace.resolve()
@@ -393,7 +460,7 @@ def main() -> int:
         rows: list[dict[str, str]] = []
         seen: set[tuple[str, str, str, str]] = set()
         for pattern in group.patterns:
-            hits = run_rg(rg_bin, pattern, sources, args.max_hits_per_query)
+            hits = run_query(engine, engine_bin, pattern, sources, args.max_hits_per_query)
             for file_path, line_no, context in hits:
                 key = (file_path, line_no, context, pattern)
                 if key in seen:
@@ -415,7 +482,7 @@ def main() -> int:
         total_hits += len(rows)
 
     write_index(output_dir, workspace, sources, summaries)
-    print(f"[OK] Query Pack 完成，命中 {total_hits} 条，输出目录: {output_dir}")
+    print(f"[OK] Query Pack 完成，engine={engine}，命中 {total_hits} 条，输出目录: {output_dir}")
     return 0
 
 

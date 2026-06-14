@@ -63,7 +63,7 @@ java-audit-workspace/
 1. `auth-recon`：先梳理认证方式、鉴权位置、放行规则、权限边界和路由鉴权映射。
 2. `route-surface`：在鉴权侦查后补充入口、参数、Handler 和路由证据。
 3. `component-surface`：识别 Java Web 组件、配置、版本来源和实际使用点，并映射到漏洞族候选。
-4. `query-pack`：基于反编译产物和源码运行固定 rg 查询集，输出并归类 search hits。
+4. `query-pack`：基于反编译产物和源码运行固定 Query Pack，输出并归类 search hits。
 5. `sink-candidate`：基于鉴权面、组件面、Query Pack 命中和入口面提取危险调用与 source/sink 候选。
 6. `trace`：只追踪高价值候选，证明 source-to-sink 传播链。
 7. `qa`：独立复核确认漏洞是否满足六门槛、鉴权字段、payload 和 BurpSuite 原始请求包。
@@ -134,7 +134,7 @@ java-audit-workspace/
 python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <workspace> [--source <源码或反编译目录>]
 ```
 
-默认检索 `<workspace>/decompiled`、`src`、`source`、`sources`；若业务代码在额外目录、业务 JAR/class 解包目录或手工反编译目录中，必须用 `--source` 显式加入。脚本使用 `rg -n -a -i`，不把 NG/语义检索作为硬流程。
+默认检索 `<workspace>/decompiled`、`src`、`source`、`sources`；若业务代码在额外目录、业务 JAR/class 解包目录或手工反编译目录中，必须用 `--source` 显式加入。脚本默认使用 Python 标准库检索，不依赖 `rg`；需要加速时可用 `--engine auto` 或 `--engine rg`。NG/语义检索不作为硬流程。
 
 Query Pack 输出到 `workspace/evidence/search-hits/`。每条命中只是候选线索，不是漏洞结论；必须完成归类和处理：
 

@@ -5,7 +5,8 @@
 ## 使用规则
 
 - 漏洞审计在完成组件暴露面识别后、漏洞族初筛前运行 Query Pack。
-- 默认使用 `rg -n -a -i` 检索源码、反编译产物、业务 JAR/class 解包或反编译后的目录。
+- 默认使用 Python 标准库检索源码、反编译产物、业务 JAR/class 解包或反编译后的目录，不依赖 `rg`。
+- 可用 `--engine auto` 在存在 `rg` 时自动使用 `rg` 加速；可用 `--engine rg` 强制使用 `rg`；Windows/macOS/Linux 通用默认值是 `--engine python`。
 - 大型项目可用 `--group <slug>` 只运行部分查询组；用 `--list-groups` 查看所有查询组。分组执行不能替代最终闭环，未运行或未处理的高价值面需要在覆盖限制里说明。
 - Query 命中不等于漏洞。命中必须进入 `workspace/evidence/search-hits/`，再由 AI 结合入口、参数、鉴权、传播链和防护判断归类。
 - 一个命中可以映射多个漏洞族。例如 `URL.openConnection` 可映射 SSRF、开放重定向、敏感信息泄露；`XMLInputFactory` 可映射 XXE、XSLT、SSRF、文件读取。

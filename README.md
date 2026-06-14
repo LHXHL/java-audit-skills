@@ -11,7 +11,7 @@
 - 梳理当前源码的路由信息、接口入口、Handler、参数和证据位置。
 - 梳理当前源码的鉴权信息、认证授权机制、权限配置和路由鉴权映射。
 - 识别 Java Web 组件暴露面，并将组件映射到漏洞族候选继续审计。
-- 使用 Query Pack 对源码和反编译产物做基础 rg 检索，并把命中归类到候选闭环。
+- 使用 Query Pack 对源码和反编译产物做基础检索，并把命中归类到候选闭环。
 - 需要 payload 和 BurpSuite Repeater 可用的原始 HTTP 请求包。
 - 需要把工具、临时脚本、反编译结果、证据、日志和报告统一放入审计工作目录。
 
@@ -136,11 +136,13 @@ java -jar cfr-0.152.jar <target.jar|target.war|target.class> --outputdir <output
 ```bash
 python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace>
 python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --source /path/to/source-or-decompiled
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --engine python
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --engine auto
 python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --list-groups
 python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --group sql-mybatis --group ssrf-http-client
 ```
 
-脚本使用 `rg -n -a -i` 生成 `workspace/evidence/search-hits/`。Query Pack v2 按入口、source、传播中间态、鉴权、SQL/JDBC/MyBatis/JPA、NoSQL、命令、表达式、模板、文件、SSRF、XML、LDAP、反序列化、XSS、凭据、密码学、TLS、CORS/CSRF、调试端点、日志、资源消耗和业务流程拆分查询组。命中只是候选线索，必须被归类为生成候选、合并候选、低价值放弃、误报、不适用或防护阻断；未处理命中会导致 evidence 闭环校验失败。
+脚本默认使用 Python 标准库递归扫描并生成 `workspace/evidence/search-hits/`，不依赖 `rg`。如需加速，可用 `--engine auto` 自动优先使用 `rg`，或用 `--engine rg` 强制使用 `rg`。Query Pack v2 按入口、source、传播中间态、鉴权、SQL/JDBC/MyBatis/JPA、NoSQL、命令、表达式、模板、文件、SSRF、XML、LDAP、反序列化、XSS、凭据、密码学、TLS、CORS/CSRF、调试端点、日志、资源消耗和业务流程拆分查询组。命中只是候选线索，必须被归类为生成候选、合并候选、低价值放弃、误报、不适用或防护阻断；未处理命中会导致 evidence 闭环校验失败。
 
 ## 报告校验
 
