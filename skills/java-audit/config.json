@@ -1,0 +1,16 @@
+{
+  "workspace_name": "java-audit-workspace",
+  "directories": {
+    "tools": "tools",
+    "decompiled": "decompiled",
+    "reports": "reports",
+    "tmp": "tmp",
+    "logs": "logs",
+    "evidence": "evidence"
+  },
+  "cfr": {
+    "version": "0.152",
+    "filename": "cfr-0.152.jar",
+    "url": "https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar"
+  }
+}
