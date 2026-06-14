@@ -46,7 +46,7 @@
 典型执行流程：
 
 1. AI 识别输入类型：源码、JAR/WAR/class、反编译产物、模块、diff 或混合材料。
-2. AI 创建 `java-audit-workspace/`，并把工具、反编译结果、日志、证据和报告都放进去。
+2. AI 创建审计工作目录，并把工具、反编译结果、日志、证据和报告都放进去；如果默认目录已存在，会使用随机前缀创建新目录。
 3. 如果目标是 JAR/WAR/class，AI 下载 CFR 并通过 CLI 反编译。
 4. AI 按用户意图选择报告类型：漏洞审计、路由信息梳理或鉴权信息梳理。
 5. 如果是漏洞审计，AI 必须先梳理鉴权方式、放行规则、权限边界和路由鉴权状态，再从鉴权面选择审计切入点。
@@ -92,8 +92,8 @@ https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar
 
 ```bash
 python3 skills/java-audit/scripts/init_audit_workspace.py --base /path/to/project
-python3 skills/java-audit/scripts/fetch_cfr.py --workspace /path/to/project/java-audit-workspace
-python3 skills/java-audit/scripts/decompile_with_cfr.py /path/to/app.war --workspace /path/to/project/java-audit-workspace --analyseas WAR
+python3 skills/java-audit/scripts/fetch_cfr.py --workspace <init 输出的 workspace>
+python3 skills/java-audit/scripts/decompile_with_cfr.py /path/to/app.war --workspace <init 输出的 workspace> --analyseas WAR
 ```
 
 底层 CLI：
