@@ -71,9 +71,10 @@
 3. 如果目标是 JAR/WAR/class，AI 下载 CFR 并通过 CLI 反编译。
 4. AI 按用户意图选择报告类型：漏洞审计、路由信息梳理或鉴权信息梳理。
 5. 如果是漏洞审计，AI 必须先梳理鉴权方式、放行规则、权限边界和路由鉴权状态，再从鉴权面选择审计切入点。
-6. 漏洞审计必须将常见 Java 漏洞族列成内部初筛表逐项检查，只对 `[x]` 漏洞族下的具体候选进入深度审计；同一漏洞族可拆成多个 `VULN-CAND-xxx` 候选。
-7. AI 最终只把满足六项验收标准的内容写入“确认漏洞”；不得输出内部初筛表、证据矩阵或“漏洞不存在/已排除漏洞类型”清单。
-8. AI 输出 Markdown 报告，并用校验脚本检查报告边界。
+6. 漏洞审计必须将常见 Java 漏洞族列成内部初筛表逐项检查；每个 `[x]` 漏洞族必须生成 `VULN-CAND-xxx` 候选、进入深度审计并形成闭环状态。
+7. AI 生成最终报告前先运行 evidence 闭环校验；任一 `[x]` 没有候选、没有证据矩阵或状态仍为“候选”时，必须返工。
+8. AI 最终只把满足六项验收标准的内容写入“确认漏洞”；不得输出内部初筛表、证据矩阵或“漏洞不存在/已排除漏洞类型”清单。
+9. AI 输出 Markdown 报告，并用报告校验脚本检查报告边界。
 
 ## 目录结构
 
@@ -129,12 +130,15 @@ java -jar cfr-0.152.jar <target.jar|target.war|target.class> --outputdir <output
 生成报告后建议运行：
 
 ```bash
+python3 skills/java-audit/scripts/validate_evidence_closure.py /path/to/java-audit-workspace
 python3 skills/java-audit/scripts/validate_report.py /path/to/report.md --type vuln
 python3 skills/java-audit/scripts/validate_report.py /path/to/route_report.md --type route
 python3 skills/java-audit/scripts/validate_report.py /path/to/auth_report.md --type auth
 ```
 
-校验器会检查章节、占位符和报告边界。漏洞报告会额外检查确认漏洞必填字段、BurpSuite 原始 HTTP 请求包，以及“疑似/待验证”内容是否误入确认漏洞区。
+`validate_evidence_closure.py` 会检查漏洞族初筛表中每个 `[x]` 是否生成候选、是否有证据矩阵、是否闭环为确认/降级/放弃。它只校验流程闭环，不判断漏洞真假。
+
+报告校验器会检查章节、占位符和报告边界。漏洞报告会额外检查确认漏洞必填字段、BurpSuite 原始 HTTP 请求包，以及“疑似/待验证”内容是否误入确认漏洞区。
 它还会拦截“漏洞不存在”“已排除漏洞类型”等枚举式否定结论，避免把内部假设证伪过程写进最终报告。
 
 ## 安全边界
