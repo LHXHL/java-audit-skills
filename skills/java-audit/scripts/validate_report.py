@@ -33,6 +33,7 @@ AUTH_SECTIONS = [
 
 VULN_FIELDS = [
     "- 严重等级:",
+    "- 根因:",
     "- 受影响入口:",
     "- 是否需要鉴权:",
     "- 鉴权方式:",
@@ -83,6 +84,29 @@ FORBIDDEN_NEGATIVE_REPORT_TERMS = [
     "反序列化已排除",
 ]
 
+FORBIDDEN_INTERNAL_EVIDENCE_TERMS = [
+    "VULN-CAND",
+    "证据矩阵",
+    "同源路由排查",
+]
+
+RELATED_ROUTE_TABLE_HEADER = "| 编号 | 入口 | Handler | 参数来源 | 鉴权方式 | 传播链差异 | 请求差异/复用说明 | 证据 |"
+
+FORBIDDEN_IN_RELATED_ROUTES = [
+    "待验证",
+    "疑似",
+    "证据不足",
+    "被阻断",
+    "不可达",
+    "缺证据",
+    "需要人工验证",
+    "高风险线索",
+    "[ ]",
+    "[-]",
+    "[!]",
+    "[?]",
+]
+
 
 def section_names(text: str) -> list[str]:
     return re.findall(r"^##\s+\d+\.\s+.+$", text, flags=re.MULTILINE)
@@ -107,6 +131,16 @@ def vulnerability_blocks(confirmed_body: str) -> list[str]:
     return blocks
 
 
+def subsection_body(block: str, heading: str) -> str:
+    start = block.find(heading)
+    if start < 0:
+        return ""
+    match = re.search(r"^#{3,4}\s+", block[start + len(heading):], flags=re.MULTILINE)
+    if not match:
+        return block[start:]
+    return block[start:start + len(heading) + match.start()]
+
+
 def detect_report_type(text: str) -> str:
     names = section_names(text)
     if names == VULN_SECTIONS:
@@ -124,6 +158,9 @@ def validate_vuln(text: str) -> list[str]:
     for term in FORBIDDEN_NEGATIVE_REPORT_TERMS:
         if term in text:
             errors.append(f"漏洞报告不得输出不存在或已排除漏洞清单: {term}")
+    for term in FORBIDDEN_INTERNAL_EVIDENCE_TERMS:
+        if term in text:
+            errors.append(f"漏洞报告不得复制内部 evidence matrix 内容: {term}")
 
     if section_names(text) != VULN_SECTIONS:
         errors.append(f"章节不匹配: {section_names(text)!r}")
@@ -146,6 +183,17 @@ def validate_vuln(text: str) -> list[str]:
         for field in VULN_FIELDS:
             if field not in block:
                 errors.append(f"{title} 缺少字段: {field}")
+        if "#### 主入口完整请求包" not in block:
+            errors.append(f"{title} 缺少主入口完整请求包小节")
+        if "#### 其他确认受影响入口" not in block:
+            errors.append(f"{title} 缺少其他确认受影响入口小节")
+        related = subsection_body(block, "#### 其他确认受影响入口")
+        if related:
+            if RELATED_ROUTE_TABLE_HEADER not in related and "无" not in related:
+                errors.append(f"{title} 其他确认受影响入口缺少标准表格或无")
+            for term in FORBIDDEN_IN_RELATED_ROUTES:
+                if term in related:
+                    errors.append(f"{title} 其他确认受影响入口包含降级状态: {term}")
         if "```http" not in block:
             errors.append(f"{title} 缺少 http fenced 原始请求包")
         for term in FORBIDDEN_IN_CONFIRMED:
