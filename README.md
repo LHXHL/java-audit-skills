@@ -18,6 +18,30 @@
 - 只生成 Semgrep/CodeQL/规则库。
 - 对非授权线上目标发起扫描、爆破或破坏性验证。
 
+## 如何使用
+
+在支持 Skills 的环境中，直接用 `$java-audit` 指向具体 Java 审计目标，并说明你需要“快速审计”“确认漏洞”“payload”或“BurpSuite 原始请求包”。
+
+```text
+使用 $java-audit 审计 /path/to/project，只输出确认漏洞，并给出 payload 和 BurpSuite 原始 HTTP 请求包。
+```
+
+```text
+使用 $java-audit 对 /path/to/app.war 先反编译再快速审计，所有工具、临时文件和报告都放到审计工作目录。
+```
+
+```text
+使用 $java-audit 分析这个 Java diff 是否引入真实可利用漏洞；不能确认的内容放入高风险线索。
+```
+
+典型执行流程：
+
+1. AI 识别输入类型：源码、JAR/WAR/class、反编译产物、模块、diff 或混合材料。
+2. AI 创建 `java-audit-workspace/`，并把工具、反编译结果、日志、证据和报告都放进去。
+3. 如果目标是 JAR/WAR/class，AI 下载 CFR 并通过 CLI 反编译。
+4. AI 基于代码证据做 source-to-sink 审计，只把满足六项验收标准的内容写入“确认漏洞”。
+5. AI 输出 Markdown 报告，并用校验脚本检查报告边界。
+
 ## 目录结构
 
 ```text
@@ -27,8 +51,6 @@ java-audit-skills/
 └── skills/
     └── java-audit/
         ├── SKILL.md
-        ├── agents/
-        │   └── openai.yaml
         ├── config.json
         ├── references/
         └── scripts/
