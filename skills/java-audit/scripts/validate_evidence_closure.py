@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验 java-audit 漏洞族初筛到候选深审的 evidence 闭环。"""
+"""校验 java-audit 组件暴露面、漏洞族初筛到候选深审的 evidence 闭环。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,11 @@ def is_separator_row(cells: list[str]) -> bool:
 
 
 def parse_screening_rows(screening_path: Path) -> list[dict[str, str]]:
-    lines = screening_path.read_text(encoding="utf-8").splitlines()
+    return parse_markdown_table(screening_path, ["漏洞族", "状态"])
+
+
+def parse_markdown_table(markdown_path: Path, required_headers: list[str]) -> list[dict[str, str]]:
+    lines = markdown_path.read_text(encoding="utf-8").splitlines()
     headers: list[str] = []
     rows: list[dict[str, str]] = []
     in_table = False
@@ -37,7 +41,7 @@ def parse_screening_rows(screening_path: Path) -> list[dict[str, str]]:
             continue
 
         cells = split_markdown_row(stripped)
-        if "漏洞族" in cells and "状态" in cells:
+        if all(header in cells for header in required_headers):
             headers = cells
             in_table = True
             continue
@@ -71,6 +75,73 @@ def is_missing_reason(value: str) -> bool:
     return is_blank_or_placeholder(stripped) or stripped in {"无", "无。", "N/A", "n/a", "不适用"}
 
 
+def extract_candidate_ids(value: str) -> list[str]:
+    return sorted(set(CANDIDATE_RE.findall(value)))
+
+
+def has_any_basis(*values: str) -> bool:
+    return any(not is_blank_or_placeholder(value) for value in values)
+
+
+def validate_component_surface(evidence_dir: Path, screening_rows: list[dict[str, str]]) -> list[str]:
+    errors: list[str] = []
+    component_path = evidence_dir / "component-surface.md"
+    if not component_path.exists():
+        return [f"缺少 Java Web 组件暴露面表: {component_path}"]
+
+    rows = parse_markdown_table(component_path, ["组件", "状态"])
+    if not rows:
+        return [f"未能解析 Java Web 组件暴露面表: {component_path}"]
+
+    screening_candidate_ids = {
+        candidate_id
+        for row in screening_rows
+        for candidate_id in extract_candidate_ids(row.get("候选 ID", ""))
+    }
+
+    for index, row in enumerate(rows, start=1):
+        component = row.get("组件", f"第 {index} 行")
+        status = row.get("状态", "")
+        version_source = row.get("版本/来源", "")
+        evidence_location = row.get("证据位置", "")
+        usage_point = row.get("配置/使用点", "")
+        related_family = row.get("关联漏洞族", "")
+        candidate_ids = extract_candidate_ids(row.get("候选 ID", ""))
+        handling = row.get("处理说明", "")
+
+        if status == "[ ]":
+            errors.append(f"{component} 仍为 [ ] 未检查状态，最终报告前必须闭环")
+            continue
+
+        if status in REASON_REQUIRED_STATUSES:
+            if not has_any_basis(version_source, evidence_location, usage_point):
+                errors.append(f"{component} 标记 {status}，但缺少版本/来源、证据位置或使用点依据")
+            if is_blank_or_placeholder(handling):
+                errors.append(f"{component} 标记 {status}，但缺少处理说明")
+            continue
+
+        if status not in DEEP_AUDIT_STATUSES:
+            errors.append(f"{component} 状态非法或不受支持: {status}")
+            continue
+
+        if is_blank_or_placeholder(evidence_location):
+            errors.append(f"{component} 标记 {status}，但缺少证据位置")
+        if is_blank_or_placeholder(related_family):
+            errors.append(f"{component} 标记 {status}，但缺少关联漏洞族")
+        if not candidate_ids:
+            errors.append(f"{component} 标记 {status}，但没有记录 VULN-CAND 候选 ID")
+            continue
+
+        for candidate_id in candidate_ids:
+            if candidate_id not in screening_candidate_ids:
+                errors.append(f"{component} 的 {candidate_id} 未映射到漏洞族初筛表")
+            matrix_path = evidence_dir / f"{candidate_id}-evidence-matrix.md"
+            if not matrix_path.exists():
+                errors.append(f"{component} 的 {candidate_id} 缺少证据矩阵: {matrix_path.name}")
+
+    return errors
+
+
 def validate_closure(workspace: Path) -> list[str]:
     evidence_dir = workspace if workspace.name == "evidence" else workspace / "evidence"
     errors: list[str] = []
@@ -86,6 +157,8 @@ def validate_closure(workspace: Path) -> list[str]:
     if not rows:
         return [f"未能解析漏洞族初筛表: {screening_path}"]
 
+    errors.extend(validate_component_surface(evidence_dir, rows))
+
     for index, row in enumerate(rows, start=1):
         vuln_family = row.get("漏洞族", f"第 {index} 行")
         status = row.get("状态", "")
@@ -93,7 +166,7 @@ def validate_closure(workspace: Path) -> list[str]:
         next_step = row.get("下一步", "")
         candidate_summary = row.get("发现的具体候选", "")
         candidate_id_cell = row.get("候选 ID", "")
-        candidate_ids = sorted(set(CANDIDATE_RE.findall(candidate_id_cell)))
+        candidate_ids = extract_candidate_ids(candidate_id_cell)
 
         if status == "[ ]":
             errors.append(f"{vuln_family} 仍为 [ ] 未检查状态，最终报告前必须闭环")

@@ -92,6 +92,10 @@ FORBIDDEN_INTERNAL_EVIDENCE_TERMS = [
     "漏洞族初筛表",
     "漏洞族初筛",
     "vulnerability-type-screening",
+    "component-surface",
+    "Java Web 组件暴露面",
+    "组件暴露面表",
+    "组件暴露面识别表",
     "发现的具体候选",
     "候选 ID",
 ]

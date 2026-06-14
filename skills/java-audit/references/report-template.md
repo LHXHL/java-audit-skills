@@ -83,6 +83,6 @@ param=payload
 - 主确认入口必须提供完整 BurpSuite 原始 HTTP 请求包。
 - “其他确认受影响入口”只能列严格确认的同源路由；证据不足、待验证、被阻断或不可达的路由写入高风险线索或内部 evidence 文件。
 - 高风险线索不得附带编造的 Burp 请求包。
-- 不得把 `workspace/evidence/` 的漏洞族初筛表、`VULN-CAND-xxx` 证据矩阵或同源路由排查表复制到最终报告。
+- 不得把 `workspace/evidence/` 的组件暴露面表、漏洞族初筛表、`VULN-CAND-xxx` 证据矩阵或同源路由排查表复制到最终报告。
 - 不得输出漏洞类型排除清单，例如“SQL 注入不存在”“SSRF 已排除”“未发现以下漏洞类型”。
 - 原始 HTTP 请求必须使用 `http` fenced code block。
