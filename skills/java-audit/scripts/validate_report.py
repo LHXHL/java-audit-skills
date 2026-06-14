@@ -57,6 +57,32 @@ FORBIDDEN_IN_CONFIRMED = [
     "下一步人工验证",
 ]
 
+FORBIDDEN_NEGATIVE_REPORT_TERMS = [
+    "已排除漏洞",
+    "漏洞排除",
+    "不存在漏洞",
+    "漏洞不存在",
+    "不存在的漏洞",
+    "已证伪漏洞",
+    "未发现以下漏洞",
+    "以下漏洞不存在",
+    "SQL 注入不存在",
+    "SQL注入不存在",
+    "SQL 注入已排除",
+    "已排除 SQL 注入",
+    "SSRF 不存在",
+    "SSRF不存在",
+    "SSRF 已排除",
+    "已排除 SSRF",
+    "XXE 不存在",
+    "XXE不存在",
+    "XXE 已排除",
+    "已排除 XXE",
+    "反序列化不存在",
+    "反序列化漏洞不存在",
+    "反序列化已排除",
+]
+
 
 def section_names(text: str) -> list[str]:
     return re.findall(r"^##\s+\d+\.\s+.+$", text, flags=re.MULTILINE)
@@ -94,6 +120,10 @@ def detect_report_type(text: str) -> str:
 
 def validate_vuln(text: str) -> list[str]:
     errors: list[str] = []
+
+    for term in FORBIDDEN_NEGATIVE_REPORT_TERMS:
+        if term in text:
+            errors.append(f"漏洞报告不得输出不存在或已排除漏洞清单: {term}")
 
     if section_names(text) != VULN_SECTIONS:
         errors.append(f"章节不匹配: {section_names(text)!r}")
