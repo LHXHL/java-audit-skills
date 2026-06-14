@@ -34,6 +34,8 @@ AUTH_SECTIONS = [
 VULN_FIELDS = [
     "- 严重等级:",
     "- 受影响入口:",
+    "- 是否需要鉴权:",
+    "- 鉴权方式:",
     "- 参数来源:",
     "- Source-to-Sink 传播链:",
     "- Sink:",
@@ -95,6 +97,8 @@ def validate_vuln(text: str) -> list[str]:
 
     if section_names(text) != VULN_SECTIONS:
         errors.append(f"章节不匹配: {section_names(text)!r}")
+    if "| 鉴权起手结论 |" not in section_body(text, "## 1. 审计概述"):
+        errors.append("审计概述缺少鉴权起手结论")
 
     confirmed = section_body(text, "## 2. 确认漏洞")
     if not confirmed:
