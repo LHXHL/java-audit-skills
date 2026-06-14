@@ -63,9 +63,10 @@ java-audit-workspace/
 1. `auth-recon`：先梳理认证方式、鉴权位置、放行规则、权限边界和路由鉴权映射。
 2. `route-surface`：在鉴权侦查后补充入口、参数、Handler 和路由证据。
 3. `component-surface`：识别 Java Web 组件、配置、版本来源和实际使用点，并映射到漏洞族候选。
-4. `sink-candidate`：基于鉴权面、组件面和入口面提取危险调用与 source/sink 候选。
-5. `trace`：只追踪高价值候选，证明 source-to-sink 传播链。
-6. `qa`：独立复核确认漏洞是否满足六门槛、鉴权字段、payload 和 BurpSuite 原始请求包。
+4. `query-pack`：基于反编译产物和源码运行固定 rg 查询集，输出并归类 search hits。
+5. `sink-candidate`：基于鉴权面、组件面、Query Pack 命中和入口面提取危险调用与 source/sink 候选。
+6. `trace`：只追踪高价值候选，证明 source-to-sink 传播链。
+7. `qa`：独立复核确认漏洞是否满足六门槛、鉴权字段、payload 和 BurpSuite 原始请求包。
 
 禁止把子 Agent 输出的线索直接写成确认漏洞。确认漏洞仍必须由主流程统一套用验收标准，并在报告中保留证据来源。
 
@@ -125,13 +126,32 @@ java-audit-workspace/
 
 不反编译所有第三方依赖；只有业务代码、shaded 包、配置或实际使用点需要理解依赖实现时，才按需反编译相关类。
 
-## 7. 漏洞族初筛
+## 7. Query Pack 检索
+
+漏洞审计时读取 `discovery-query-pack.md`，在组件暴露面识别后、漏洞族初筛前运行：
+
+```bash
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <workspace> [--source <源码或反编译目录>]
+```
+
+默认检索 `<workspace>/decompiled`、`src`、`source`、`sources`；若业务代码在额外目录、业务 JAR/class 解包目录或手工反编译目录中，必须用 `--source` 显式加入。脚本使用 `rg -n -a -i`，不把 NG/语义检索作为硬流程。
+
+Query Pack 输出到 `workspace/evidence/search-hits/`。每条命中只是候选线索，不是漏洞结论；必须完成归类和处理：
+
+- 高价值命中生成新 `VULN-CAND-xxx`，或合并到已有候选。
+- 低价值、误报、不适用或被防护阻断的命中，必须写明处理说明。
+- 一个命中可映射多个漏洞族，不能因为它已被一个漏洞族处理，就忽略另一个实际相关的漏洞族。
+- 同一漏洞族下多个独立入口、root cause、sink 或传播链，必须拆分为多个候选，或明确合并依据。
+
+最终报告前 `search-hits/` 中不得存在 `未处理`、`待归类` 或空处理状态。不得把 Query Pack 原始命中表复制进最终报告。
+
+## 8. 漏洞族初筛
 
 漏洞审计时读取 `vulnerability-hypotheses.md` 和 `evidence-matrix.md`，先将漏洞假设库中的漏洞族列成内部漏洞族初筛表，保存到 `workspace/evidence/vulnerability-type-screening.md`。
 
-初筛表是深度审计前置步骤。必须按 `vulnerability-hypotheses.md` 的常见 Java 漏洞族逐项检查，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的漏洞族。不能用“注入类”“文件类”“鉴权类”等过粗分类替代，也不能只检查模型第一眼命中的 sink。
+初筛表是深度审计前置步骤。必须按 `vulnerability-hypotheses.md` 的常见 Java 漏洞族逐项检查，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的漏洞族和 `search-hits/` 中的 Query Pack 命中。不能用“注入类”“文件类”“鉴权类”等过粗分类替代，也不能只检查模型第一眼命中的 sink。
 
-逐项检查每个漏洞族是否存在候选面或相关代码证据，例如入口、参数来源、危险 API、配置弱点、框架特征或业务流程。`[x]` 只表示“该漏洞族存在候选面，进入深度审计”，不表示漏洞确认存在。
+逐项检查每个漏洞族是否存在候选面或相关代码证据，例如入口、参数来源、危险 API、配置弱点、框架特征、Query Pack 命中或业务流程。`[x]` 只表示“该漏洞族存在候选面，进入深度审计”，不表示漏洞确认存在。
 
 初筛表中未勾选、被防护阻断或与项目技术栈无关的类型只保留在内部表；不得把“已排除漏洞类型”“某漏洞不存在”“未发现以下漏洞”写进最终报告。
 
@@ -143,11 +163,11 @@ java-audit-workspace/
 
 对每个具体候选，在 `workspace/evidence/` 创建并同步维护独立候选证据矩阵。候选最终状态必须闭环为 `确认`、`降级` 或 `放弃`；状态为 `降级` 或 `放弃` 时必须写清原因。任何 `[x]`/`[?]` 漏洞族存在候选缺失、矩阵缺失或状态仍为 `候选` 时，不得生成最终报告。
 
-`[-]` 或 `[!]` 不强制生成候选，但必须写清初筛依据和下一步/处理说明。最终报告前初筛表不得保留 `[ ]`。
+`[-]` 或 `[!]` 不强制生成候选，但必须写清初筛依据和下一步/处理说明；依据应说明组件表和 Query Pack 覆盖情况，不能只写“第一眼未见”。最终报告前初筛表不得保留 `[ ]`。
 
-生成最终报告前必须运行 `scripts/validate_evidence_closure.py <workspace>`。该脚本会同时校验组件表、漏洞族初筛表和候选证据矩阵的流程闭环，不代表漏洞确认；通过后再进入报告生成与 `validate_report.py` 校验。
+生成最终报告前必须运行 `scripts/validate_evidence_closure.py <workspace>`。该脚本会同时校验组件表、Query Pack 命中、漏洞族初筛表和候选证据矩阵的流程闭环，不代表漏洞确认；通过后再进入报告生成与 `validate_report.py` 校验。
 
-## 8. Source-to-Sink 追踪
+## 9. Source-to-Sink 追踪
 
 每个候选至少追踪：
 
@@ -164,7 +184,7 @@ java-audit-workspace/
 
 候选深审结束时必须更新矩阵的 `当前状态` 和 `决策`：确认漏洞写 `确认` 且“满足确认漏洞门槛”为“是”；证据不足但有人工验证价值写 `降级` 并说明缺失证据；被防护阻断、不可达或不成立写 `放弃` 并说明原因。
 
-## 9. 同源路由扩展
+## 10. 同源路由扩展
 
 主入口满足确认漏洞门槛后，继续排查是否存在同源路由。重点检查复用同一 controller、service、helper、mapper、sink、参数绑定模式或鉴权缺陷的入口。
 
@@ -172,7 +192,7 @@ java-audit-workspace/
 
 证据不足但有验证价值的同源路由写入高风险线索；被防护阻断、不可达或已放弃的路由只记录在 `workspace/evidence/*-related-routes.md`，不进入最终报告。
 
-## 10. 报告生成
+## 11. 报告生成
 
 最终报告只包含“确认漏洞”和必要的“高风险线索 / 下一步人工验证”。确认漏洞必须带 payload 和 BurpSuite 原始 HTTP 请求包；高风险线索不得伪装成确认漏洞，也不得附带编造的可复制利用材料。
 

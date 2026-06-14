@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验 java-audit 组件暴露面、漏洞族初筛到候选深审的 evidence 闭环。"""
+"""校验 java-audit 组件暴露面、Query Pack、漏洞族初筛到候选深审的 evidence 闭环。"""
 
 from __future__ import annotations
 
@@ -13,10 +13,33 @@ CANDIDATE_RE = re.compile(r"VULN-CAND-\d{3}")
 FINAL_STATES = {"确认", "降级", "放弃"}
 DEEP_AUDIT_STATUSES = {"[x]", "[?]"}
 REASON_REQUIRED_STATUSES = {"[-]", "[!]"}
+SEARCH_HIT_UNHANDLED_STATUSES = {"", "未处理", "待归类"}
+SEARCH_HIT_CANDIDATE_STATUSES = {"生成候选", "合并候选"}
+SEARCH_HIT_NO_CANDIDATE_STATUSES = {"低价值放弃", "误报", "不适用", "防护阻断"}
+SEARCH_HIT_HANDLED_STATUSES = SEARCH_HIT_CANDIDATE_STATUSES | SEARCH_HIT_NO_CANDIDATE_STATUSES
 
 
 def split_markdown_row(line: str) -> list[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+
+    cells: list[str] = []
+    buffer: list[str] = []
+    escaped = False
+    for char in stripped:
+        if char == "|" and not escaped:
+            cells.append("".join(buffer).strip())
+            buffer = []
+            continue
+        buffer.append(char)
+        escaped = char == "\\" and not escaped
+        if char != "\\" and escaped:
+            escaped = False
+    cells.append("".join(buffer).strip())
+    return cells
 
 
 def is_separator_row(cells: list[str]) -> bool:
@@ -142,6 +165,77 @@ def validate_component_surface(evidence_dir: Path, screening_rows: list[dict[str
     return errors
 
 
+def count_from_cell(value: str) -> int:
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else 0
+
+
+def validate_search_hits(evidence_dir: Path, screening_rows: list[dict[str, str]]) -> list[str]:
+    errors: list[str] = []
+    search_dir = evidence_dir / "search-hits"
+    index_path = search_dir / "index.md"
+    if not index_path.exists():
+        return [f"缺少 Query Pack 检索索引: {index_path}"]
+
+    screening_candidate_ids = {
+        candidate_id
+        for row in screening_rows
+        for candidate_id in extract_candidate_ids(row.get("候选 ID", ""))
+    }
+
+    index_rows = parse_markdown_table(index_path, ["查询组", "文件", "命中数"])
+    for row in index_rows:
+        hit_file = row.get("文件", "")
+        hit_count = count_from_cell(row.get("命中数", ""))
+        if hit_count > 0 and hit_file and hit_file != "无" and not (search_dir / hit_file).exists():
+            errors.append(f"Query Pack 索引记录 {hit_file} 有 {hit_count} 条命中，但文件不存在")
+
+    hit_files = sorted(path for path in search_dir.glob("*.md") if path.name != "index.md")
+    for hit_file in hit_files:
+        rows = parse_markdown_table(hit_file, ["编号", "处理状态"])
+        if not rows:
+            errors.append(f"未能解析 Query Pack 命中文件: {hit_file}")
+            continue
+
+        for row_index, row in enumerate(rows, start=1):
+            hit_id = row.get("编号", f"{hit_file.name} 第 {row_index} 行")
+            family = row.get("漏洞族", "")
+            priority = row.get("优先级", "")
+            status = row.get("处理状态", "").strip()
+            candidate_ids = extract_candidate_ids(row.get("候选 ID", ""))
+            handling = row.get("处理说明", "")
+            label = f"{hit_file.name} {hit_id}({family})"
+
+            if status in SEARCH_HIT_UNHANDLED_STATUSES:
+                errors.append(f"{label} 仍为未处理/待归类状态，最终报告前必须归类处理")
+                continue
+
+            if status not in SEARCH_HIT_HANDLED_STATUSES:
+                errors.append(f"{label} 处理状态非法或不受支持: {status}")
+                continue
+
+            if is_blank_or_placeholder(handling):
+                errors.append(f"{label} 缺少处理说明")
+
+            if status in SEARCH_HIT_CANDIDATE_STATUSES:
+                if not candidate_ids:
+                    errors.append(f"{label} 标记 {status}，但没有记录 VULN-CAND 候选 ID")
+                    continue
+                for candidate_id in candidate_ids:
+                    if candidate_id not in screening_candidate_ids:
+                        errors.append(f"{label} 的 {candidate_id} 未映射到漏洞族初筛表")
+                    matrix_path = evidence_dir / f"{candidate_id}-evidence-matrix.md"
+                    if not matrix_path.exists():
+                        errors.append(f"{label} 的 {candidate_id} 缺少证据矩阵: {matrix_path.name}")
+            elif priority == "高" and candidate_ids:
+                for candidate_id in candidate_ids:
+                    matrix_path = evidence_dir / f"{candidate_id}-evidence-matrix.md"
+                    if not matrix_path.exists():
+                        errors.append(f"{label} 填写了 {candidate_id}，但缺少证据矩阵: {matrix_path.name}")
+
+    return errors
+
+
 def validate_closure(workspace: Path) -> list[str]:
     evidence_dir = workspace if workspace.name == "evidence" else workspace / "evidence"
     errors: list[str] = []
@@ -158,6 +252,7 @@ def validate_closure(workspace: Path) -> list[str]:
         return [f"未能解析漏洞族初筛表: {screening_path}"]
 
     errors.extend(validate_component_surface(evidence_dir, rows))
+    errors.extend(validate_search_hits(evidence_dir, rows))
 
     for index, row in enumerate(rows, start=1):
         vuln_family = row.get("漏洞族", f"第 {index} 行")

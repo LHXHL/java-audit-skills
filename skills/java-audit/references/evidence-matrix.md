@@ -1,6 +1,6 @@
 # 内部证据矩阵
 
-本文件定义漏洞审计过程中的内部证据记录。`component-surface.md` 是漏洞族初筛前的 Java Web 组件暴露面表；`vulnerability-type-screening.md` 是深度审计前置的漏洞族初筛表；`VULN-CAND-xxx-evidence-matrix.md` 是具体候选进入深度审计后的证据矩阵。它们都只保留在 `workspace/evidence/`，不得复制到最终报告。
+本文件定义漏洞审计过程中的内部证据记录。`component-surface.md` 是漏洞族初筛前的 Java Web 组件暴露面表；`search-hits/` 是 Query Pack 的硬检索命中；`vulnerability-type-screening.md` 是深度审计前置的漏洞族初筛表；`VULN-CAND-xxx-evidence-matrix.md` 是具体候选进入深度审计后的证据矩阵。它们都只保留在 `workspace/evidence/`，不得复制到最终报告。
 
 ## 文件位置
 
@@ -8,6 +8,8 @@
 
 ```text
 workspace/evidence/component-surface.md
+workspace/evidence/search-hits/index.md
+workspace/evidence/search-hits/<slug>.md
 workspace/evidence/vulnerability-type-screening.md
 workspace/evidence/VULN-CAND-001-evidence-matrix.md
 workspace/evidence/VULN-CAND-001-related-routes.md
@@ -35,9 +37,28 @@ workspace/evidence/VULN-CAND-001-related-routes.md
 
 `[-]` / `[!]` 行不强制生成候选，但必须写明版本/来源、证据位置或使用点依据，以及处理说明。最终报告前组件表不得保留 `[ ]`。
 
+## Query Pack 检索命中
+
+Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `discovery-query-pack.md`。命中只表示存在代码线索，不表示漏洞成立。
+
+`workspace/evidence/search-hits/*.md` 中每条命中必须在最终报告前完成处理：
+
+| 处理状态 | 要求 |
+|---|---|
+| `生成候选` | 必须填写 `VULN-CAND-xxx`，并在漏洞族初筛表和候选证据矩阵中闭环 |
+| `合并候选` | 必须填写被合并的 `VULN-CAND-xxx`，并说明合并依据 |
+| `低价值放弃` | 必须说明为什么不形成候选，例如命中测试代码、固定常量、不可达分支 |
+| `误报` | 必须说明为什么不是相关 sink、source、组件或配置 |
+| `不适用` | 必须说明技术栈、部署形态或输入条件为何不适用 |
+| `防护阻断` | 必须说明白名单、固定枚举、编码、鉴权、沙箱或安全封装的阻断依据 |
+
+`未处理`、`待归类` 或空处理状态只允许作为过程态。高价值命中不得整体放弃；同一漏洞族下多个独立入口、root cause、sink 或传播链必须拆成多个候选，或明确合并到已有候选。
+
+一个命中可映射多个漏洞族。处理时应保留多重映射信息，避免只按一个漏洞族解释后漏掉另一个风险面。
+
 ## 漏洞族初筛表
 
-初筛表必须列出 `vulnerability-hypotheses.md` 中的常见 Java 漏洞族，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的关联漏洞族。允许在末尾补充项目特有业务漏洞类型。必须逐项检查并完成状态标记后，再进入深度审计。
+初筛表必须列出 `vulnerability-hypotheses.md` 中的常见 Java 漏洞族，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的关联漏洞族和 `search-hits/` 中 Query Pack 命中。允许在末尾补充项目特有业务漏洞类型。必须逐项检查并完成状态标记后，再进入深度审计。
 
 `[x]` 只表示该漏洞族存在候选面或相关证据，需要进入深度审计；不得把它解释为确认漏洞。不要使用“注入类”“文件类”“鉴权类”等过粗合并行替代逐项检查。
 
@@ -96,7 +117,7 @@ workspace/evidence/VULN-CAND-001-related-routes.md
 - `[?]` 与 `[x]` 的差别只在初筛置信度，不在是否深审；`[?]` 深审后也必须闭环为 `确认`、`降级` 或 `放弃`。
 - `[-]` 和 `[!]` 不强制生成候选，但必须填写初筛依据和下一步/处理说明。
 - 任一 `[x]`/`[?]` 组件或漏洞族缺少候选 ID、缺少对应证据矩阵，或候选矩阵仍停留在 `候选` 状态时，不得生成最终报告。
-- 最终报告前组件表和初筛表都不得保留 `[ ]`。
+- 最终报告前组件表和初筛表都不得保留 `[ ]`，`search-hits/` 不得保留未处理命中。
 
 ## 证据矩阵模板
 
@@ -136,7 +157,7 @@ workspace/evidence/VULN-CAND-001-related-routes.md
 python3 skills/java-audit/scripts/validate_evidence_closure.py <workspace>
 ```
 
-校验失败时，必须回到组件识别、漏洞族初筛或深度审计补齐候选、证据矩阵或最终状态。该脚本只校验组件表和初筛表中的 `[x]`/`[?]` 是否完成流程闭环，不判断漏洞是否真实成立。
+校验失败时，必须回到组件识别、Query Pack 命中处理、漏洞族初筛或深度审计补齐候选、证据矩阵或最终状态。该脚本只校验组件表、search hits 和初筛表中的流程闭环，不判断漏洞是否真实成立。
 
 ## 同源路由排查模板
 

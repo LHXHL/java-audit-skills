@@ -2,7 +2,7 @@
 
 本仓库提供一个中文 `java-audit` Skill，用于标准化 Java 快速漏洞审计、路由信息梳理、鉴权信息梳理、Java Web 组件暴露面识别的流程、工程目录、反编译工具调用、证据门槛和 Markdown 报告格式。
 
-新版不再维护旧的多 Skill 体系，也不把路由枚举、鉴权梳理、组件暴露面或专项漏洞知识拆成多个入口。`java-audit` 的核心职责是让 AI 在处理具体 Java 目标时保持稳定流程：先建立工作目录，必要时用 CFR 反编译，再按用户意图输出漏洞、路由或鉴权报告。漏洞审计会先梳理鉴权，再识别 Java Web 组件暴露面，随后进入漏洞族初筛和候选深审。
+新版不再维护旧的多 Skill 体系，也不把路由枚举、鉴权梳理、组件暴露面或专项漏洞知识拆成多个入口。`java-audit` 的核心职责是让 AI 在处理具体 Java 目标时保持稳定流程：先建立工作目录，必要时用 CFR 反编译，再按用户意图输出漏洞、路由或鉴权报告。漏洞审计会先梳理鉴权，再识别 Java Web 组件暴露面，运行 Query Pack 硬检索，随后进入漏洞族初筛和候选深审。
 
 ## 适用场景
 
@@ -11,6 +11,7 @@
 - 梳理当前源码的路由信息、接口入口、Handler、参数和证据位置。
 - 梳理当前源码的鉴权信息、认证授权机制、权限配置和路由鉴权映射。
 - 识别 Java Web 组件暴露面，并将组件映射到漏洞族候选继续审计。
+- 使用 Query Pack 对源码和反编译产物做基础 rg 检索，并把命中归类到候选闭环。
 - 需要 payload 和 BurpSuite Repeater 可用的原始 HTTP 请求包。
 - 需要把工具、临时脚本、反编译结果、证据、日志和报告统一放入审计工作目录。
 
@@ -73,10 +74,11 @@
 4. AI 按用户意图选择报告类型：漏洞审计、路由信息梳理或鉴权信息梳理。
 5. 如果是漏洞审计，AI 必须先梳理鉴权方式、放行规则、权限边界和路由鉴权状态，再从鉴权面选择审计切入点。
 6. 漏洞审计必须识别 Java Web 组件暴露面，组件命中只用于驱动漏洞族初筛和候选生成，不能直接确认漏洞。
-7. 漏洞审计必须将常见 Java 漏洞族列成内部初筛表逐项检查；每个 `[x]` 或 `[?]` 组件或漏洞族必须生成 `VULN-CAND-xxx` 候选、进入深度审计并形成闭环状态。
-8. AI 生成最终报告前先运行 evidence 闭环校验；任一 `[x]`/`[?]` 没有候选、没有证据矩阵或状态仍为“候选”时，必须返工；组件表和初筛表不得保留 `[ ]`。
-9. AI 最终只把满足六项验收标准的内容写入“确认漏洞”；不得输出内部组件表、初筛表、证据矩阵或“漏洞不存在/已排除漏洞类型”清单。
-10. AI 输出 Markdown 报告，并用报告校验脚本检查报告边界。
+7. 漏洞审计必须运行 Query Pack 检索源码和反编译产物，命中进入 `workspace/evidence/search-hits/` 并完成归类处理。
+8. 漏洞审计必须将常见 Java 漏洞族列成内部初筛表逐项检查；每个 `[x]` 或 `[?]` 组件或漏洞族必须生成 `VULN-CAND-xxx` 候选、进入深度审计并形成闭环状态。
+9. AI 生成最终报告前先运行 evidence 闭环校验；任一 `[x]`/`[?]` 没有候选、没有证据矩阵或状态仍为“候选”，或 search hits 仍有未处理命中时，必须返工；组件表和初筛表不得保留 `[ ]`。
+10. AI 最终只把满足六项验收标准的内容写入“确认漏洞”；不得输出内部组件表、Query Pack 命中表、初筛表、证据矩阵或“漏洞不存在/已排除漏洞类型”清单。
+11. AI 输出 Markdown 报告，并用报告校验脚本检查报告边界。
 
 ## 目录结构
 
@@ -127,6 +129,19 @@ python3 skills/java-audit/scripts/decompile_with_cfr.py /path/to/app.war --works
 java -jar cfr-0.152.jar <target.jar|target.war|target.class> --outputdir <output-dir>
 ```
 
+## Query Pack 检索
+
+漏洞审计在组件暴露面识别后、漏洞族初筛前运行：
+
+```bash
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace>
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --source /path/to/source-or-decompiled
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --list-groups
+python3 skills/java-audit/scripts/run_discovery_queries.py --workspace <init 输出的 workspace> --group sql-mybatis --group ssrf-http-client
+```
+
+脚本使用 `rg -n -a -i` 生成 `workspace/evidence/search-hits/`。Query Pack v2 按入口、source、传播中间态、鉴权、SQL/JDBC/MyBatis/JPA、NoSQL、命令、表达式、模板、文件、SSRF、XML、LDAP、反序列化、XSS、凭据、密码学、TLS、CORS/CSRF、调试端点、日志、资源消耗和业务流程拆分查询组。命中只是候选线索，必须被归类为生成候选、合并候选、低价值放弃、误报、不适用或防护阻断；未处理命中会导致 evidence 闭环校验失败。
+
 ## 报告校验
 
 生成报告后建议运行：
@@ -138,7 +153,7 @@ python3 skills/java-audit/scripts/validate_report.py /path/to/route_report.md --
 python3 skills/java-audit/scripts/validate_report.py /path/to/auth_report.md --type auth
 ```
 
-`validate_evidence_closure.py` 会检查组件暴露面表和漏洞族初筛表中每个 `[x]`/`[?]` 是否生成候选、是否有证据矩阵、是否闭环为确认/降级/放弃，并禁止最终组件表或初筛表保留 `[ ]`。它只校验流程闭环，不判断漏洞真假。
+`validate_evidence_closure.py` 会检查组件暴露面表、Query Pack 命中和漏洞族初筛表中每个 `[x]`/`[?]` 是否生成候选、是否有证据矩阵、是否闭环为确认/降级/放弃，并禁止最终组件表或初筛表保留 `[ ]`、禁止 search hits 保留未处理命中。它只校验流程闭环，不判断漏洞真假。
 
 报告校验器会检查章节、占位符和报告边界。漏洞报告会额外检查确认漏洞必填字段、BurpSuite 原始 HTTP 请求包，以及“疑似/待验证”内容是否误入确认漏洞区。
 它还会拦截“漏洞不存在”“已排除漏洞类型”等枚举式否定结论，避免把内部假设证伪过程写进最终报告。
