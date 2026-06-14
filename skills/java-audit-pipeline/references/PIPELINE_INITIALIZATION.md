@@ -29,8 +29,11 @@
 {output_path}/file_upload_audit
 {output_path}/file_read_audit
 {output_path}/deserialization_audit
+{output_path}/structured
 {output_path}/qa_reports
 {output_path}/scripts
+{output_path}/scripts/route_extractors
+{output_path}/scripts/trace_helpers
 {output_path}/tmp
 {output_path}/decompiled/cache
 ```
@@ -39,7 +42,7 @@
 
 ## scripts 目录
 
-`{output_path}/scripts/` 用于保存本次流水线运行需要的确定性配置和临时 helper 脚本。
+`{output_path}/scripts/` 用于保存本次流水线运行需要的确定性配置和临时 helper 脚本。路由枚举 extractor 必须写入 `{output_path}/scripts/route_extractors/`，调用链 trace helper 必须写入 `{output_path}/scripts/trace_helpers/`。
 
 必须写入：
 
@@ -60,6 +63,8 @@
 - `max_concurrent_agents` 必须是数字，合法范围为 2 到 10。
 - 若用户限制审计范围，`audit_scope` 写入 include/exclude 模块清单和确认时间。
 - 运行时生成的 helper 脚本只能写入 `scripts/`，不得写到源码目录或系统临时目录。
+- 路由机制识别或 route worker 生成的 extractor 只能写入 `scripts/route_extractors/`；并行 worker 的专属脚本写入 `scripts/route_extractors/agent-1-{N}/`。
+- 调用链追踪 worker 生成的 trace helper 只能写入 `scripts/trace_helpers/`；并行 worker 的专属脚本写入 `scripts/trace_helpers/agent-5-{N}/`。
 - 不得把脚本目录作为正式审计报告目录。
 
 ## pipeline_plan.md
@@ -108,6 +113,7 @@
 
 - `{output_path}/tmp/` 保存流水线临时状态、排序中间结果、待返工队列快照等可删除文件。
 - `{output_path}/decompiled/cache/` 保存共享反编译缓存；每个 worker 如需独占反编译目录，由负责人在派发前创建 `{output_path}/decompiled/{agent_id}/`。
+- `{output_path}/structured/` 保存机器可校验的路由、dispatcher、sink、任务和 coverage 中间产物；这是正式证据索引，不是临时目录。
 - 临时目录内容不得作为漏洞证据或最终报告引用；正式报告必须引用子 skill 报告、源码路径、route mapper 产物或 QA 报告。
 - 不得把源码、skill、references 或 scripts 复制到临时目录作为规避上下文限制的手段。
 
@@ -121,6 +127,7 @@
 | 创建目录数 | {number} |
 | 配置文件 | `{output_path}/scripts/pipeline_config.json` |
 | 执行计划 | `{output_path}/pipeline_plan.md` |
+| 结构化证据目录 | `{output_path}/structured` |
 | 临时目录 | `{output_path}/tmp`, `{output_path}/decompiled/cache` |
 
 数量必须来自实际目录清单；无法确认时写“未精确统计”。
@@ -130,6 +137,6 @@
 - 禁止在创建基础目录前启动 worker。
 - 禁止由 worker 自行创建全局目录结构。
 - 禁止把 helper 脚本、临时状态或反编译缓存写入源码目录。
-- 禁止把 `scripts/`、`tmp/`、`decompiled/cache/` 中的内容当作正式漏洞证据。
+- 禁止把 `scripts/`、`tmp/`、`decompiled/cache/` 中的内容当作正式漏洞证据；`structured/` 是证据索引，必须引用其上游源码、反编译源码或报告证据。
 - 禁止缺少 `scripts/pipeline_config.json` 时声称完整流水线启动成功。
 - 禁止缺少 `pipeline_plan.md` 时启动 worker。

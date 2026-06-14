@@ -1,116 +1,75 @@
 ---
 name: java-deserialization-audit
-description: 用于 Java 反序列化漏洞深度审计。用户要求分析 DESERIALIZE sink、ObjectInputStream/readObject、XMLDecoder、Fastjson、XStream、JDBC 反序列化、Shiro RememberMe、Log4j/JNDI 或 gadget 链可利用性时触发；纯组件 CVE 查询、XXE 或 SQL 注入审计不触发。
+description: 当用户要求审计 Java 源码、反编译源码、部署产物或 pipeline 结构化证据中的 DESERIALIZE sink、对象解码、类型元数据、多态对象构造、自动触发链或对象构造后危险原语可达性时使用；纯组件风险查询、XXE 或 SQL 注入审计不触发。
 ---
 
-# Java 反序列化漏洞审计
+# Java Deserialization Audit
 
-审计 Java 项目中的反序列化风险，输出入口可达性、用户可控性、sink、组件/JDK/gadget 条件、可利用性、Burp 请求和 payload。组件版本命中只能作为输入证据，不能直接判定漏洞成立。
+## 当前定位
 
-## 触发与边界
+`java-deserialization-audit` 是对象解码与反序列化专项判定层。它消费 route、trace、源码、反编译源码、组件线索和结构化 sink，回答：
 
-触发场景：
-- 用户要求审计 Java 反序列化漏洞、反序列化 RCE、gadget 链、ysoserial 链或 `DESERIALIZE` sink。
-- 用户点名 `ObjectInputStream/readObject`、`XMLDecoder`、Fastjson、XStream、JDBC 反序列化、Shiro RememberMe、Log4j/JNDI。
-- Pipeline 阶段4中，`route_tracer` 出现 `DESERIALIZE` sink，或 `vuln_scanner` 命中反序列化相关组件。
+- `REQUEST_PARAM` 是否到达真实 `OBJECT_DECODER`。
+- 输入是否可控制类型、对象图、二进制对象、文本对象或多态字段。
+- 解码后是否存在 `AUTO_TRIGGER_METHOD`、`GADGET_CONDITION` 或 `DANGEROUS_PRIMITIVE`。
+- 白名单、过滤器、类型限制、签名、加密、固定类型或分支条件是否阻断。
+- 结论应为：确认漏洞、条件成立、待验证、不可确认、非漏洞。
 
-不触发场景：
-- 只查依赖版本/CVE：使用 `java-vuln-scanner`。
-- 只做路由提取：使用 `java-route-mapper`。
-- 只追踪调用链、不判断漏洞：使用 `java-route-tracer`。
-- 只审计 XML 外部实体：使用 `java-xxe-audit`。
-- 只审计 SQL/JDBC SQL 注入：使用 `java-sql-audit`。
+本 skill 不负责全量路由枚举、不替代调用链追踪、不判断 XXE 外部实体、不扫描组件 CVE。
 
-XStream/XMLDecoder 属于反序列化审计；普通 XML 外部实体属于 XXE 审计。
+## 触发条件
 
-## 输入优先级
+- 用户要求判断反序列化、对象解码、多态对象构造或 gadget 条件。
+- 上游结构化证据包含 `sink_types: ["DESERIALIZE"]` 或 `dispatch_to` 包含本 skill。
+- route tracer 已证明输入到达对象解码类 sink。
+- 组件扫描只提供候选时，本 skill 可用于验证入口、sink 和链条条件。
 
-如果存在 `{project_name}_audit/`，必须按顺序读取前序输出：
+以下情况不触发：
 
-1. `route_mapper/`：路由、HTTP 方法、参数结构、Burp 请求模板。
-2. `route_tracer/`：`Sink类型 = DESERIALIZE`、参数可控性、调用链、分支条件。
-3. `vuln_report/`：Fastjson、XStream、Shiro、Log4j、JDBC、CommonsCollections 等版本风险。
-4. `cross_analysis/`：高危路由、鉴权绕过、组件漏洞与路由关联。
+- 只查组件版本或 CVE。
+- 只判断 XML 外部实体。
+- 只追踪调用链但不做漏洞判定。
+- 只有组件存在，没有入口、sink 或类型控制证据。
 
-没有前序输出时，不强制运行 `java-route-mapper`。先命令扫描 sink、依赖和入口，再对命中分支局部追踪输入来源。Sink 细则见 [DESERIALIZATION_SINKS.md](references/DESERIALIZATION_SINKS.md)，组件条件见 [COMPONENT_PATTERNS.md](references/COMPONENT_PATTERNS.md)。
+## 工作流
 
-## 覆盖规则
+1. 读取 route、trace、sink、component 和 coverage 证据。
+2. 缺少端到端数据流时先要求或执行 route tracer。
+3. 读取 `references/DESERIALIZATION_SINKS.md` 和 `references/COMPONENT_PATTERNS.md`。
+4. 源码缺失时按共享反编译策略补关键实现。
+5. 判定输入控制、类型控制、自动触发、危险原语和过滤条件。
+6. 需要授权复核材料时读取 `references/PAYLOAD_GUIDE.md`。
+7. 使用 `references/OUTPUT_TEMPLATE.md` 输出报告。
 
-不得仅凭 `rg --type java`、少量已反编译文件或单一关键词搜索得出“无反序列化 sink”。当项目包含 `.class`、`.jar`、XML/Properties 配置、WebService、Struts/Spring MVC、MQ、RPC 或定时/导入入口时，必须补充覆盖：
+## 成功标准
 
-- 枚举入口：`web.xml`、`applicationContext*.xml`、`struts*.xml`、Spring MVC/REST 配置、`jaxws:endpoint`、Servlet/Filter/Listener、MQ listener、RPC/Dubbo/Hessian/RMI exporter、上传/导入/配置同步接口。
-- 扫描源码与字节码：对 `.java`、反编译目录、`.class` 字符串、部署配置和关键 jar 内容分别扫描；报告中说明扫描范围，不能把“源码无命中”写成“项目无命中”。
-- 追踪包装层：命中 `XmlUtil.fromXML`、`JsonUtils.fromJson`、`SerializeUtil.deserialize`、`ObjectMessage.getObject`、`DriverManager.getConnection` 等封装方法时，必须继续追到真实 sink。
-- 追踪注解/DTO/配置线索：发现 `@XStreamAlias`、Fastjson autoType 配置、Shiro rememberMe 配置、JMS `MessageListener`、JDBC 动态数据源配置等线索后，必须查使用类和调用链，不得直接判为“仅配置/仅注解/仅组件”。
-- 命中 `.class` 后必须按需反编译命中的类、入口类和工具类，再判断入口、参数可控性、组件/JDK/gadget 条件。
+- 每个结论都有入口、参数、trace 证据、decoder、类型控制、防护和链条条件。
+- 不把组件命中、类名、注解、配置或缺实现写成确认漏洞。
+- 明确区分完整链条、缺入口、缺 sink、缺类型控制、缺危险原语、被过滤器阻断。
+- 确认漏洞或条件成立项的复核材料必须限定授权环境、低破坏、可回滚。
+- 报告不写内部规则、validator 结果或组件版本清单。
 
-## 反编译规则
+## Hard Rules
 
-当源码缺失、不完整、与部署包不一致，或前序输出只给出 `.class` / `.jar` 证据时，按 [DECOMPILE_STRATEGY.md](../java-shared/DECOMPILE_STRATEGY.md) 使用 CFR 反编译。`SKILL.md` 不重复维护命令细节；需要执行命令时读取共享策略。
+1. 没有真实 `OBJECT_DECODER`，不得下反序列化结论。
+2. 没有用户可控对象数据或类型元数据，不得下确认漏洞。
+3. 没有自动触发或危险原语证据，不得下远程代码执行类结论。
+4. 组件存在只是候选，不是漏洞。
+5. XML 外部实体风险交给 XXE 专项；本 skill 只判断对象构造和触发链。
+6. 结论状态只能使用：确认漏洞、条件成立、待验证、不可确认、非漏洞。
 
-优先反编译与反序列化入口、sink 和触发条件直接相关的类：
+## 按需读取
 
-- Controller、Action、Servlet、Filter、Listener、RPC/MQ handler。
-- 调用 `ObjectInputStream/readObject`、`XMLDecoder/readObject`、Fastjson、XStream、Shiro RememberMe、Log4j/JNDI、JDBC URL/DataSource 的类。
-- 配置导入、数据源测试、缓存读取、消息消费、任务执行、文件导入等可能处理外部数据的类。
-- gadget 触发辅助类、反序列化封装工具类和组件适配类。
+- sink 分类：`references/DESERIALIZATION_SINKS.md`
+- 组件与链条条件：`references/COMPONENT_PATTERNS.md`
+- 授权复核边界：`references/PAYLOAD_GUIDE.md`
+- 输出模板：`references/OUTPUT_TEMPLATE.md`
 
-反编译结果只能作为证据补全来源，必须继续结合入口、可控性、调用链、组件/JDK/gadget 条件和 payload 验证判断风险。报告中必须标注反编译来源；反编译失败时记录失败原因，不得凭类名或组件命中直接判定漏洞成立。
+## Evals
 
-## Gadget 链审计规则
-
-当存在原生反序列化、JMS `ObjectMessage`、Shiro RememberMe、XStream/Fastjson/Jackson 等可构造对象的入口，或依赖中命中 CommonsCollections、CommonsBeanutils、Groovy、Spring、C3P0、Rome、Vaadin、Hibernate、Javassist、AspectJ、Xalan/TemplatesImpl 等 gadget 组件时，必须按 [COMPONENT_PATTERNS.md](references/COMPONENT_PATTERNS.md) 做链条完整性判断。
-
-Gadget 风险不能只看依赖。至少确认：
-
-1. 入口是否能接收攻击者控制的序列化数据或类型声明。
-2. 反序列化后是否会自动触发 `readObject`、`readResolve`、`hashCode`、`compareTo`、`toString` 等方法。
-3. 链条是否能到达反射、命令执行、JNDI、类加载、模板执行、脚本/表达式执行等危险原语。
-4. classpath、JDK、组件版本、模块限制、类过滤、白名单/黑名单是否允许该链成立。
-5. 报告必须区分“完整链条”“缺入口”“缺中间类”“缺危险原语”“被过滤器阻断”“仅组件存在”。
-
-## 判定规则
-
-漏洞成立至少需要：
-
-1. 存在反序列化 sink。
-2. 输入来自不可信来源，或攻击者可间接控制。
-3. 入口可达，且分支条件可满足。
-4. 组件/JDK/gadget/配置条件满足，或可通过安全方式验证。
-5. 报告给出安全验证思路、可复制 Burp 请求和 payload。
-
-必须记录不可利用原因：不可达、输入不可控、类型白名单、禁用 autoType、JDK/组件版本不满足、无 gadget、无出网条件、仅本地固定文件等。
-
-## 输出要求
-
-输出到 `{project_name}_audit/deserialization_audit/`：
-
-`{project_name}_deserialization_audit_{YYYYMMDD_HHMMSS}.md`
-
-漏洞编号格式：`{C/H/M/L}-DESER-{序号}`。报告模板见 [OUTPUT_TEMPLATE.md](references/OUTPUT_TEMPLATE.md)。多入口漏洞按 [VULNERABILITY_GROUPING.md](../java-shared/VULNERABILITY_GROUPING.md) 聚合：同根因多路由合并为一个漏洞编号并列出“受影响入口”，不同鉴权、组件、gadget、payload 或修复条件时拆分。
-
-只完整列出存在风险或不可控但需说明的 sink；安全 sink 在摘要中提及数量和安全原因即可。每个漏洞必须包含可利用前置条件、Burp 请求、payload 和修复建议。
-
-## Payload 规则
-
-允许输出完整 payload，但必须遵守 [PAYLOAD_GUIDE.md](references/PAYLOAD_GUIDE.md)：
-
-- 仅用于授权测试语境。
-- 优先使用 DNS OOB、`id`、`whoami`、`calc` 等低破坏验证。
-- 标注组件版本、JDK 版本、是否出网、是否鉴权、是否存在 gadget。
-- Burp 请求必须匹配真实路由、参数名、Content-Type 和认证状态。
-- 不生成删除文件、持久化、横向移动、批量利用类 payload。
-
-## Gotchas
-
-- 不要把组件 CVE 命中直接当成可利用漏洞。
-- 不要把 CommonsCollections/Beanutils 等 gadget 依赖直接判为 RCE；必须同时有可控入口、自动触发点、危险原语和未被过滤的链条。
-- 不要把 `rg --type java` 无结果当成“项目无 sink”；Java Web 项目常只有 `.class`、jar 和 XML 配置。
-- 不要只搜 `ObjectInputStream`，必须覆盖 XMLDecoder、Fastjson、XStream、JDBC、Shiro、Log4j/JNDI。
-- 不要忽略包装工具类和二次调用链，例如 `XmlUtil.fromXML`、`JsonUtils.fromJson`、`SerializeUtil.deserialize`、`ObjectMessage.getObject`。
-- 不要把注解、DTO 或配置线索直接当安全结论；`@XStreamAlias`、JMS listener、Shiro rememberMe、动态 DataSource 都必须追踪使用类。
-- 不要把自定义危险方法当成 gadget；没有自动触发方法或容器触发点时，只能列为代码风险线索。
-- 不要忽略 Filter、Servlet、Listener、RPC/MQ、配置导入、数据源测试接口。
-- 不要把 `JSON.parseObject(str, SafeClass.class)` 直接判为 Fastjson RCE。
-- 不要把不可达工具方法当成 HTTP 可利用漏洞。
-- 不要忽略分支条件、鉴权条件、组件/JDK 条件和出网条件。
+| 类型 | 场景 | 预期 |
+|------|------|------|
+| 正例 | trace 显示 `REQUEST_PARAM` 到达 `OBJECT_DECODER` | 判断类型控制、过滤和链条条件 |
+| 正例 | 组件候选存在但入口未知 | 写待验证或要求 trace |
+| 反例 | 只问 XML 外部实体 | 交给 XXE |
+| 反例 | 只有组件版本 | 交给组件扫描或标候选 |

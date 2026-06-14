@@ -1,84 +1,28 @@
-# WebService 路由参考
+# 服务端点入口兼容参考
 
-只在项目存在 CXF/JAX-WS/Axis/Axis2/SOAP endpoint，或用户要求列 SOAP 服务和方法时读取本文件。
+本文件作为服务端点入口的机制参考。
 
-## 核心原则
-
-WebService URL 必须来自配置和 Servlet 映射，不得根据类名、bean id、endpoint id、服务实现名猜测。
+## 泛化模型
 
 ```text
-完整 URL = context-path + SOAP servlet mapping + endpoint address
+SERVICE_ROOT
+  -> SERVICE_CONTRACT
+  -> ENTRY_OPERATION
+  -> MESSAGE_PARAM
+  -> HANDLER_METHOD
 ```
 
-## CXF / JAX-WS
+## 必须区分
 
-优先读取：
+- `SERVICE_ROOT` 只是服务根，不是最终入口。
+- `ENTRY_OPERATION` 才是下游可追踪的最小入口。
+- 消息字段必须从契约、源码、反编译源码或解析逻辑中提取。
+- 若服务契约缺失但源码可读，extractor 应从 handler 方法和消息对象收集候选。
 
-- `applicationContext*.xml`
-- `cxf*.xml`
-- `<jaxws:endpoint ... address="...">`
-- `<jaxws:server ... address="...">`
-- Spring bean 中的 Endpoint 发布代码。
-- `web.xml` 中 CXF Servlet 映射，如 `/services/*`, `/ws/*`。
+## blocked 条件
 
-必须输出：
+- 只有服务根，没有 operation 来源。
+- 契约文件缺失且 handler 实现不可读。
+- operation 由运行时注册或外部表驱动，当前输入无法读取。
 
-- 配置文件路径和行号。
-- address 原文。
-- implementor / service bean。
-- 完整 URL。
-- 每个暴露方法的方法名、签名、参数、返回类型。
-
-## 方法枚举
-
-方法来源优先级：
-
-1. WSDL/接口类明确暴露的方法。
-2. `@WebMethod` 且未 `exclude=true` 的方法。
-3. 实现类 public 方法，排除 `Object` 方法、getter/setter、框架生命周期方法。
-4. 反编译结果。
-
-如果服务接口和实现类分离，优先以接口暴露方法为准，再用实现类补参数名和类型。
-
-## Axis / Axis2
-
-配置来源：
-
-- Axis: `server-config.wsdd`
-- Axis2: `services.xml`, `WEB-INF/services/*/META-INF/services.xml`
-
-URL 常见形式：
-
-```text
-context-path + /axis/services/{serviceName}
-context-path + /services/{serviceName}
-```
-
-以实际 Servlet mapping 和 service name 为准。
-
-## executeInterface / methodId
-
-以下网关式服务必须展开 sub-function：
-
-- `executeInterface(String interfaceId, String json)`
-- `execute(String methodId, String payload)`
-- `invoke(String code, ...)`
-- switch/if-else/Map/反射根据字符串分发。
-
-每个 interfaceId/methodId/code 都作为独立接口块输出，参数结构按该分支实际 JSON/XML/schema/DTO 解析。
-
-## 错误示例
-
-| 错误 | 正确做法 |
-|------|----------|
-| `UserServiceImpl` -> `/UserService` | 读取 endpoint `address` |
-| endpoint id `userService` -> `/userService` | id 只用于定位 bean，不是 URL |
-| 只输出 WSDL URL | 列出所有 SOAP 方法 |
-| `executeInterface` 只算一条 | 每个 interfaceId 单独计数 |
-
-## Gotchas
-
-- Spring bean `implementor="#beanName"` 需要继续解析 bean class。
-- `address="/"` 和 Servlet mapping 的斜杠拼接要去重。
-- 多个 endpoint 指向同一实现类时，是多个服务入口，URL 不同。
-- `@WebMethod(operationName=...)` 的外部方法名可能不同于 Java 方法名，两个都要记录。
+blocked 必须记录证据、缺失项和下一步，不得只写“待分析”。

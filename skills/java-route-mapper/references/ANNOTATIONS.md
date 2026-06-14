@@ -1,51 +1,28 @@
-# 注解与参数绑定参考
+# 元数据入口参考
 
-只在需要从注解判断路由、HTTP 方法、参数来源或 Content-Type 时读取本文件。
+本文件只作为兼容入口保留。不要把任何具体元数据、框架或库 API 名称写入 skill 通用说明；实际项目中的真实名称只能出现在审计输出证据里。
 
-## 路由注解
+## 使用原则
 
-| 技术 | 注解 | 提取内容 |
-|------|------|----------|
-| Spring | `@RequestMapping` | path/value、method、consumes、produces |
-| Spring | `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`, `@PatchMapping` | HTTP 方法由注解决定，path/value 同步读取 |
-| Spring | `@Controller`, `@RestController` | 标记类为 Spring Web 入口候选 |
-| JAX-RS | `@Path` | 类级和方法级路径 |
-| JAX-RS | `@GET`, `@POST`, `@PUT`, `@DELETE`, `@PATCH` | HTTP 方法 |
-| JAX-RS | `@Consumes`, `@Produces` | 请求和响应媒体类型 |
-| Servlet | `@WebServlet` | urlPatterns/value/name/loadOnStartup |
-| JAX-WS | `@WebService`, `@WebMethod` | SOAP 服务和暴露方法；URL 仍优先来自配置 |
+- 先识别项目中哪些文件或代码片段承担“入口声明”作用。
+- 把声明内容抽象为 `ENTRY_ROOT`、`DISPATCH_RULE`、`ENTRY_OPERATION`、`REQUEST_PARAM`。
+- 若声明只给出根路径、服务根、通配模式或分发容器，必须继续追踪内部 `DISPATCH_KEY`。
+- 项目专用 extractor 应从真实源码中读取声明结构，不套用固定规则表。
 
-## 参数来源映射
+## extractor 应提取
 
-| 来源 | Spring | JAX-RS | Servlet 代码模式 |
-|------|--------|--------|------------------|
-| Path | `@PathVariable` | `@PathParam` | `getPathInfo()` 后解析 |
-| Query/Form | `@RequestParam`, 未注解简单类型 | `@QueryParam`, `@FormParam` | `request.getParameter*` |
-| Body JSON/XML | `@RequestBody` | 无注解实体参数、`@Consumes` | `getInputStream()`, `getReader()` |
-| Header | `@RequestHeader` | `@HeaderParam` | `getHeader()` |
-| Cookie | `@CookieValue` | `@CookieParam` | `getCookies()` |
-| File | `MultipartFile`, `Part` | multipart provider | `getPart()`, Commons FileUpload |
-| Bean wrapper | `@ModelAttribute`, DTO | `@BeanParam` | 手动 set 到对象 |
+| 字段 | 说明 |
+|------|------|
+| `source_file` | 入口声明所在文件 |
+| `source_line` | 可定位行号；无法定位写 `unknown` 并说明原因 |
+| `entry_root` | 外部可达根入口 |
+| `dispatch_rule` | 如何映射到具体 operation |
+| `operation_rule` | 可枚举 operation 的来源 |
+| `params_rule` | 参数来源和字段枚举方式 |
+| `confidence` | `high` / `medium` / `low` |
 
-## 参数类型解析优先级
+## 禁止
 
-1. 方法签名类型。
-2. 注解属性，如 `required`, `defaultValue`, `name`, `value`。
-3. DTO 字段、getter/setter、构造器绑定。
-4. Bean validation 注解，如 `@NotNull`, `@Size`, `@Pattern`，只用于辅助必填/格式判断。
-5. 反编译结果。
-
-## 注解组合规则
-
-- 类级路径 + 方法级路径共同组成最终路径。
-- 多个 path/value 要展开为多条 route。
-- 多个 HTTP method 要展开为多条 route，或在同一块中明确列出多个方法；计数必须一致。
-- `consumes` 影响 Body 类型和 Content-Type。
-- 自定义组合注解需要追到其 meta-annotation，例如自定义 `@AdminApi` 上的 `@RequestMapping`。
-
-## Gotchas
-
-- Spring 未注解的复杂对象常来自 Query/Form 绑定，不要默认当作 JSON body。
-- `@RequestBody(required=false)` 仍是 Body 参数，只是可选。
-- `@WebMethod(exclude=true)` 不应列为 SOAP 方法。
-- Lombok 不改变 HTTP 参数来源，但会影响字段可见性；字段仍要从源码或反编译解析。
+- 不得因为发现入口声明就直接交付最终路由。
+- 不得凭类名、方法名、文件名或业务语义猜测 URL。
+- 模板只保留机制字段和证据字段。

@@ -22,8 +22,11 @@ EXPECTED_DIRS = [
     "file_upload_audit",
     "file_read_audit",
     "deserialization_audit",
+    "structured",
     "qa_reports",
     "scripts",
+    "scripts/route_extractors",
+    "scripts/trace_helpers",
     "tmp",
     "decompiled",
 ]
@@ -218,8 +221,11 @@ def check_initialization(output_dir: Path, errors: list[str]) -> None:
         "file_upload_audit",
         "file_read_audit",
         "deserialization_audit",
+        "structured",
         "qa_reports",
         "scripts",
+        "scripts/route_extractors",
+        "scripts/trace_helpers",
         "tmp",
         "decompiled/cache",
     ]
@@ -355,6 +361,31 @@ def check_vuln_report_with_skill_validator(output_dir: Path, errors: list[str]) 
         add_error(errors, vuln_dir, f"java-vuln-scanner validator failed: {detail}")
 
 
+def check_structured_coverage_with_validator(output_dir: Path, errors: list[str]) -> None:
+    structured_dir = output_dir / "structured"
+    blocked = output_dir / "pipeline_blocked.md"
+    quality = output_dir / "quality_report.md"
+    if blocked.exists() and not any(structured_dir.glob("*.json*")):
+        return
+    if not quality.exists() and not any(structured_dir.glob("*.json*")):
+        return
+
+    validator = Path(__file__).resolve().parent / "validate_structured_coverage.py"
+    if not validator.exists():
+        add_error(errors, structured_dir, "structured coverage validator is missing")
+        return
+    proc = subprocess.run(
+        [sys.executable, str(validator), str(output_dir), "--scope", "all"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = "\n".join(line for line in (proc.stderr + proc.stdout).splitlines() if line.strip())
+        add_error(errors, structured_dir, f"structured coverage validator failed: {detail}")
+
+
 def check_pipeline_shape(output_dir: Path, errors: list[str]) -> None:
     if not output_dir.exists():
         add_error(errors, output_dir, "output directory does not exist")
@@ -427,6 +458,7 @@ def main() -> int:
         check_recon_output_shape(args.output_dir, errors)
         check_stage_gate_consistency(args.output_dir, errors)
         check_vuln_report_with_skill_validator(args.output_dir, errors)
+        check_structured_coverage_with_validator(args.output_dir, errors)
 
     if errors:
         print("pipeline output validation failed:")

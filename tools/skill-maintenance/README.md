@@ -38,6 +38,7 @@
 | `validators/validate_sql_output.py` | 检查 `java-sql-audit` 报告章节、统计和 payload 边界 |
 | `validators/validate_vuln_output.py` | 检查 `java-vuln-scanner` 组件版本证据报告 |
 | `validators/validate_pipeline_output.py` | 检查 `java-audit-pipeline` 目录、QA 和阶段门禁 |
+| `validators/validate_structured_coverage.py` | 按 `--scope route/trace/all` 检查 `structured/` 路由、dispatcher、trace、sink 和覆盖率闭合 |
 | `validators/validate_file_read_output.py` | 检查 `java-file-read-audit` 报告边界 |
 | `validators/validate_route_tracer_output.py` | 检查 `java-route-tracer` 输出边界 |
 
@@ -48,7 +49,7 @@
 - `description` 写“何时加载”，不是功能介绍。
 - 主文档只保留当前定位、触发条件、不触发条件、成功标准、工作流、强制规则、gotchas、停止/切换条件和 eval 样例。
 - 不堆长篇漏洞背景、工具教程、完整模板或大量规则细节。
-- 新增或重写内容默认用中文；类名、方法名、配置键、CVE、命令和路径保持原文。
+- 新增或重写内容默认用中文；skill 文档和 reference 的示例使用泛化占位，不写真实项目、真实函数、真实业务路径或真实库 API 名。具体审计输出中的证据命名保持原文。
 - 漏洞类 skill 的确认漏洞或条件成立项需要给出可交付给开发单位的验证材料，包括 Burp Suite 请求和 payload；待验证、不可确认或非漏洞项不得补写验证材料。
 - 组件版本证据类 skill 不输出 Burp、payload、PoC、CVSS、具体修复版本或确认性漏洞结论。
 
@@ -85,11 +86,14 @@ claude --add-dir /path/to/java-audit-skills \
 1. 删除该 skill 上一次生成的明确测试报告或测试输出目录；不要删除源码、skill、references、运行期脚本或未知文件。
 2. 运行 `claude -p`，等待进程完整结束；长时间无输出时继续等待或轮询，不提前终止。
 3. 阅读 Claude 生成的报告，确认是否正确触发当前 skill、是否误用相邻 skill、是否遵守模板。
-4. 对适用的 skill 运行维护脚本，例如：
+4. 按本次修改范围运行适用的维护脚本；不要把所有 validator 作为固定必跑项。例如：
 
 ```bash
 python3 tools/skill-maintenance/validators/validate_sql_output.py test_outputs/java-sql-audit
 python3 tools/skill-maintenance/validators/validate_pipeline_output.py test_outputs/java-audit-pipeline
+python3 tools/skill-maintenance/validators/validate_structured_coverage.py test_outputs/java-audit-pipeline --scope route
+python3 tools/skill-maintenance/validators/validate_structured_coverage.py test_outputs/java-audit-pipeline --scope trace
+python3 tools/skill-maintenance/validators/validate_structured_coverage.py test_outputs/java-audit-pipeline --scope all
 ```
 
 5. 人工复核 validator 无法判断的内容：

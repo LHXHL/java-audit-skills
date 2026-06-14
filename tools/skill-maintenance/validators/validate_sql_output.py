@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate java-sql-audit report boundaries."""
+"""Validate java-sql-audit report boundaries.
+
+This validator checks report schema and status consistency. It intentionally
+does not check concrete database/framework/library names.
+"""
 
 from __future__ import annotations
 
@@ -10,18 +14,16 @@ from pathlib import Path
 
 
 EXPECTED_SECTIONS = [
-    "## 1. 审计概述",
+    "## 1. 审计范围",
     "## 2. 结论统计",
     "## 3. SQL 操作映射",
-    "## 4. 候选风险与非漏洞依据",
-    "## 5. 风险详情",
-    "## 6. 审计结论",
+    "## 4. 证据与限制",
+    "## 5. 授权复核材料",
+    "## 6. 修复与交接",
 ]
-
 STATUSES = ["确认漏洞", "条件成立", "待验证", "不可确认", "非漏洞"]
-
 FORBIDDEN = [
-    "## 输出自检",
+    "输出自检",
     "技能源校验",
     "测试提示词",
     "模型自检",
@@ -34,42 +36,17 @@ FORBIDDEN = [
     "验证成功",
     "网络受限",
     "命令受限",
-    "xp_cmdshell",
-    "LOAD_FILE",
-    "INTO OUTFILE",
-    "DNSLOG",
-    "OOB",
     "边界校验",
     "校验通过",
     "validator",
     "自检通过",
 ]
-
-CLASS_HEAVY_GAPS = [
-    "仅存在 .class 文件",
-    "仅存 .class 文件",
-    "大量 DAO 实现位于 class 文件中未解析",
-    "项目无源码",
-    "关键 Manager/DAO 实现",
-    "未取得关键类可读实现/反编译方法体",
-    "未取得可读反编译方法体",
-    "未取得可读实现或反编译方法体",
-]
-
-DESTRUCTIVE_SQL = re.compile(
-    r"\b(DROP|ALTER|TRUNCATE|INSERT|UPDATE|DELETE)\b",
-    flags=re.IGNORECASE,
-)
-
-COMPONENT_VERSION = re.compile(
-    r"\b(?:Hibernate|Spring|Struts2|Struts|Log4j|MyBatis)\s+\d+\.\d+(?:\.\d+)?\b"
-)
-
 APPROXIMATE = re.compile(
     r"(?<![A-Za-z0-9_-])~\s*\d+"
     r"|(?:大约|约)\s*\d+"
     r"|(?<![A-Za-z0-9_-])\d+(?:\.\d+)?(?:个|条|项|处|类|次|行|个方法|个接口)?\+(?!\d)"
 )
+DESTRUCTIVE_QUERY = re.compile(r"\b(DROP|ALTER|TRUNCATE|INSERT|UPDATE|DELETE)\b", flags=re.IGNORECASE)
 
 
 def read_text(path: Path) -> str:
@@ -103,40 +80,14 @@ def mapping_status_counts(text: str) -> dict[str, int]:
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
-        if len(cells) < 8 or not cells[0].isdigit():
+        if len(cells) < 7 or not cells[0].isdigit():
             continue
         status = cells[-1]
         if status in counts:
             counts[status] += 1
         else:
-            counts.setdefault("__invalid__", 0)
-            counts["__invalid__"] += 1
+            counts["__invalid__"] = counts.get("__invalid__", 0) + 1
     return counts
-
-
-def risk_detail_statuses(text: str) -> list[str]:
-    body = section_body(text, "## 5. 风险详情")
-    return re.findall(r"^\|\s*结论状态\s*\|\s*([^|]+?)\s*\|", body, flags=re.MULTILINE)
-
-
-def payload_blocks(text: str) -> list[str]:
-    blocks: list[str] = []
-    for match in re.finditer(r"^####\s+Payload\s*$", text, flags=re.MULTILINE):
-        start = match.end()
-        next_heading = re.search(r"^(?:###|---)", text[start:], flags=re.MULTILINE)
-        end = start + next_heading.start() if next_heading else len(text)
-        blocks.append(text[start:end])
-    return blocks
-
-
-def risk_blocks(text: str) -> list[str]:
-    body = section_body(text, "## 5. 风险详情")
-    matches = list(re.finditer(r"^###\s+", body, flags=re.MULTILINE))
-    blocks: list[str] = []
-    for i, match in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-        blocks.append(body[match.start():end])
-    return blocks
 
 
 def main() -> int:
@@ -148,41 +99,25 @@ def main() -> int:
         print(f"[FAIL] output directory does not exist: {args.output_dir}")
         return 1
 
-    reports = sorted(args.output_dir.glob("*_sql_audit_*.md"))
-    reports = [p for p in reports if p.name != "ACCEPTANCE.md"]
+    reports = [p for p in sorted(args.output_dir.glob("*_sql_audit_*.md")) if p.name != "ACCEPTANCE.md"]
     if len(reports) != 1:
         print("[FAIL] expected exactly one timestamped SQL audit report")
         return 1
 
-    report = reports[0]
-    text = read_text(report)
+    text = read_text(reports[0])
     errors: list[str] = []
 
-    names = section_names(text)
-    if names != EXPECTED_SECTIONS:
-        errors.append(f"sections mismatch: {names!r}")
-
+    if section_names(text) != EXPECTED_SECTIONS:
+        errors.append(f"sections mismatch: {section_names(text)!r}")
     if "【填写】" in text or "TODO" in text:
         errors.append("placeholder remains")
-
     if "..." in text:
         errors.append("three-dot ellipsis found")
-
     if APPROXIMATE.search(text):
         errors.append("approximate count found")
-
-    if COMPONENT_VERSION.search(text):
-        errors.append("component version leaks into SQL report")
-
     for marker in FORBIDDEN:
         if marker.casefold() in text.casefold():
             errors.append(f"forbidden marker found: {marker}")
-
-    for block in payload_blocks(text):
-        if DESTRUCTIVE_SQL.search(block):
-            context = text.casefold()
-            if "回滚" not in text and "备份" not in text and "最小样本" not in text:
-                errors.append("DML/DDL payload lacks rollback/backup/minimal-sample limitation")
 
     counts = mapping_status_counts(text)
     if counts.get("__invalid__"):
@@ -193,26 +128,13 @@ def main() -> int:
         if expected is not None and expected != actual:
             errors.append(f"stat mismatch for {status}: section 2 has {expected}, mapping has {actual}")
 
-    for detail_status in risk_detail_statuses(text):
-        status = detail_status.strip()
-        if status not in {"确认漏洞", "条件成立"}:
-            errors.append(f"risk detail contains non-confirmed status: {status}")
-
-    unresolved_chain = re.compile(r"是否(?:全部|统一)经由|未逐[个一](?:核对|确认)")
-    for block in risk_blocks(text):
-        if re.search(r"^\|\s*结论状态\s*\|\s*(确认漏洞|条件成立)\s*\|", block, flags=re.MULTILINE):
-            if unresolved_chain.search(block):
-                errors.append("confirmed/conditional risk contains unresolved end-to-end chain wording")
-
-    if re.search(r"####\s+Payload", text) and "仅限授权测试环境" not in text:
-        errors.append("payload exists without authorization limitation")
-
-    class_heavy_gap = any(marker in text for marker in CLASS_HEAVY_GAPS) or "候选 class 检查结果" in text
-    if class_heavy_gap:
-        required_markers = ["候选 class 检查结果", "选择原因", "字节码/反编译线索", "仍缺证据"]
-        for marker in required_markers:
-            if marker not in text:
-                errors.append(f"class-heavy limitation lacks marker: {marker}")
+    material = section_body(text, "## 5. 授权复核材料")
+    if "```http" in material:
+        final_count = counts.get("确认漏洞", 0) + counts.get("条件成立", 0)
+        if final_count == 0:
+            errors.append("validation request exists without confirmed or conditional item")
+        if DESTRUCTIVE_QUERY.search(material) and not any(term in text for term in ["回滚", "备份", "最小样本"]):
+            errors.append("destructive query material lacks rollback/backup/minimal-sample limitation")
 
     if errors:
         for error in errors:

@@ -53,6 +53,7 @@ QA 报告措辞要求：
 | 6 | agent 命名 | QA 文件名对应被校验 agent，不使用 `qa_report_stage*.md` 作为正式通过证据 |
 | 7 | 阶段依赖 | 下游阶段只读取已通过 QA 的上游产物；阶段2前必须有 route worker QA、route merge QA、auth QA、vuln QA |
 | 8 | 降级行为 | 无 Claude team/agent 能力时生成 `pipeline_blocked.md`，不得顺序模拟全流程 |
+| 9 | 脚本目录 | `scripts/route_extractors/` 与 `scripts/trace_helpers/` 在 worker 启动前存在 |
 
 `team_execution.md` 缺失时，不能生成完整通过的 `quality_report.md`；只能生成阻塞报告。
 
@@ -84,6 +85,8 @@ QA 报告措辞要求：
 | 8 | 阶段隔离 | 三类输出目录互不覆盖，无旧轮次报告混入 |
 | 9 | 组件报告校验 | `vuln_report/` 必须通过 `tools/skill-maintenance/validators/validate_vuln_output.py`；脚本未输出的 CVE/规则不得出现在报告中 |
 | 10 | 阶段2前置门禁 | 进入 `cross_analysis/` 前，必须存在 route worker QA、`qa_report_agent-1-merge.md`、`qa_report_agent-2-auth-audit.md`、`qa_report_agent-3-vuln-scanner.md`，且均通过 |
+| 11 | 结构化入口闭环 | `structured/route_mechanisms.json`、`routes.jsonl`、`dispatchers.jsonl`、`coverage_report.json` 存在且能对账 |
+| 12 | 半成品入口门禁 | root、通配符、网关、服务根或 dispatcher 未展开时，必须有 dispatcher/blocked 记录；只写“需进一步分析”判不通过 |
 
 阶段 QA 报告的“预期/实际”列不得原样引用带 `{...}` 的模板变量。需要说明命名格式时，写“项目名 + `_vuln_scan_` + 时间戳”或直接写真实文件名。
 阶段 QA 报告不得引用任何不合格写法的字面样例；通过时写“全部为精确数字”“未发现估算写法”，不要列出坏样例。
@@ -103,9 +106,12 @@ QA 报告措辞要求：
 | # | 校验项 | 预期 |
 |---|---|---|
 | 1 | `trace_batch_plan.md` | 批次入口、参数、上游标签和证据路径完整 |
-| 2 | route_tracer 输出 | 符合 `java-route-tracer` 当前模板，只记录调用链和 sink 证据 |
-| 3 | 边界 | 不新增鉴权结论，不写漏洞确认、验证包或具体版本建议 |
-| 4 | 覆盖率 | 已追踪入口数 / 应追踪入口数达到本轮设定阈值；未达到时写明原因 |
+| 2 | helper 标记 | 批量、高风险候选、重复模式和动态分发批次标注 `helper_required=true` |
+| 3 | trace helper 输出 | `helper_required=true` 的批次存在 `scripts/trace_helpers/agent-5-{N}/` 和机器可读 helper 输出 |
+| 4 | route_tracer 输出 | 符合 `java-route-tracer` 当前模板，只记录调用链和 sink 证据 |
+| 5 | 结构化 trace | `structured/trace_sinks.jsonl` 中每条批量追踪结果引用 helper 或人工追踪证据 |
+| 6 | 边界 | 不新增鉴权结论，不写漏洞确认、验证包或具体版本建议 |
+| 7 | 覆盖率 | 已追踪入口数 / 应追踪入口数达到本轮设定阈值；未达到时写明原因并写入 coverage blocked |
 
 ### 阶段4：专项漏洞审计
 
