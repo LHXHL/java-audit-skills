@@ -88,6 +88,24 @@ FORBIDDEN_INTERNAL_EVIDENCE_TERMS = [
     "VULN-CAND",
     "证据矩阵",
     "同源路由排查",
+    "漏洞类型初筛表",
+    "漏洞族初筛表",
+    "漏洞族初筛",
+    "vulnerability-type-screening",
+    "发现的具体候选",
+    "候选 ID",
+]
+
+FORBIDDEN_NEGATIVE_REPORT_PATTERNS = [
+    r"未发现.{0,12}SQL\s*注入",
+    r"未发现.{0,12}SSRF",
+    r"未发现.{0,12}XXE",
+    r"未发现.{0,12}反序列化",
+    r"未发现.{0,12}命令注入",
+    r"未发现.{0,12}路径穿越",
+    r"已排除.{0,12}SQL\s*注入",
+    r"已排除.{0,12}SSRF",
+    r"已排除.{0,12}XXE",
 ]
 
 RELATED_ROUTE_TABLE_HEADER = "| 编号 | 入口 | Handler | 参数来源 | 鉴权方式 | 传播链差异 | 请求差异/复用说明 | 证据 |"
@@ -158,6 +176,9 @@ def validate_vuln(text: str) -> list[str]:
     for term in FORBIDDEN_NEGATIVE_REPORT_TERMS:
         if term in text:
             errors.append(f"漏洞报告不得输出不存在或已排除漏洞清单: {term}")
+    for pattern in FORBIDDEN_NEGATIVE_REPORT_PATTERNS:
+        if re.search(pattern, text):
+            errors.append(f"漏洞报告不得输出不存在或已排除漏洞清单: {pattern}")
     for term in FORBIDDEN_INTERNAL_EVIDENCE_TERMS:
         if term in text:
             errors.append(f"漏洞报告不得复制内部 evidence matrix 内容: {term}")
