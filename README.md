@@ -22,7 +22,6 @@
 .skills/
 └── java-audit/
     ├── SKILL.md
-    ├── config.json
     ├── references/
     └── scripts/
 ```
