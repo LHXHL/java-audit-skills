@@ -1,11 +1,59 @@
 ---
 name: java-audit
-description: 当用户要求审计 Java 源码、JAR/WAR/class、反编译产物、Java Web 路由或安全发现，并需要 CFR 反编译工具下载/使用、确认漏洞判定标准、安全 Payload 和 BurpSuite 原始 HTTP 请求包证据时使用。仅用于授权 Java 代码审计和防御性安全验证。
+description: 当用户要求审计 Java 源码、JAR/WAR/class、反编译产物、Java Web 路由或安全发现，并需要默认脚本输出目录、报告输出目录、组件 YAML 正则匹配扫描、CFR 反编译工具下载/使用、确认漏洞判定标准、安全 Payload 和 BurpSuite 原始 HTTP 请求包证据时使用。仅用于授权 Java 代码审计和防御性安全验证。
 ---
 
 # Java 审计
 
-## 1. CFR 反编译工具下载及使用
+## 1. 默认输出目录
+
+未指定目录时，先创建 `<目标目录>/java-audit-workspace/` 作为审计工作目录。
+
+- 默认临时脚本输出目录：`<审计工作目录>/script-output/`
+- 报告输出目录：`<审计工作目录>/reports/`
+- 工具目录：`<审计工作目录>/tools/`
+- 反编译目录：`<审计工作目录>/decompiled/`
+
+所有脚本执行结果、临时扫描结果、命令输出、日志和中间证据都写入 `script-output/`；最终可交付报告只写入 `reports/`，默认文件名为 `java-audit-report.md`。
+
+## 2. 组件 YAML 正则匹配扫描
+
+需要从依赖、源码、JAR/WAR、`WEB-INF/lib` 或部署目录中发现组件版本风险时，使用内置组件扫描资源。
+
+- 脚本：`skills/java-audit/scripts/run_component_vulnerability_scan.py`
+- 规则：`skills/java-audit/references/java-vulnerability.yaml`
+- 规则机制：YAML 中按严重等级维护组件名和版本正则；脚本解析 Maven/Gradle、JAR/WAR、部署目录和依赖文件后，用这些正则匹配组件版本命中。
+- 命中输出：`<审计工作目录>/evidence/component-hits/`
+- 日志输出：需要保留命令日志时，写入 `<审计工作目录>/script-output/`
+
+先校验 YAML 正则：
+
+```bash
+python3 skills/java-audit/scripts/run_component_vulnerability_scan.py --workspace <审计工作目录> --validate-rules
+```
+
+扫描默认候选源：
+
+```bash
+python3 skills/java-audit/scripts/run_component_vulnerability_scan.py --workspace <审计工作目录>
+```
+
+指定一个或多个扫描源：
+
+```bash
+python3 skills/java-audit/scripts/run_component_vulnerability_scan.py --workspace <审计工作目录> --source <源码目录|依赖目录|目标.jar|目标.war|WEB-INF/lib>
+python3 skills/java-audit/scripts/run_component_vulnerability_scan.py --workspace <审计工作目录> --source <源1> --source <源2>
+```
+
+使用自定义规则文件：
+
+```bash
+python3 skills/java-audit/scripts/run_component_vulnerability_scan.py --workspace <审计工作目录> --rules <自定义java-vulnerability.yaml>
+```
+
+组件命中只能作为线索；不能仅凭组件名、版本或 CVE 命中确认漏洞，必须继续证明入口、可控参数、传播链、可利用性、Payload 和 BurpSuite 请求包。
+
+## 3. CFR 反编译工具下载及使用
 
 默认使用 CFR 0.152。
 
@@ -39,7 +87,7 @@ java -jar <审计工作目录>/tools/cfr-0.152.jar <目标.war> --analyseas WAR 
 java -jar <审计工作目录>/tools/cfr-0.152.jar <目标.jar> --jarfilter '<包名或类名正则>' --outputdir <审计工作目录>/decompiled/<目标名>
 ```
 
-## 2. 如何判定漏洞有效
+## 4. 如何判定漏洞有效
 
 只有同时满足以下标准，才能把发现写成“确认漏洞”：
 
