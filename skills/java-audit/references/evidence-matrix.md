@@ -1,6 +1,6 @@
 # 内部证据矩阵
 
-本文件定义漏洞审计过程中的内部证据记录。`component-surface.md` 是漏洞族初筛前的 Java Web 组件暴露面表；`search-hits/` 是 Query Pack 的硬检索命中；`vulnerability-type-screening.md` 是深度审计前置的漏洞族初筛表；`VULN-CAND-xxx-evidence-matrix.md` 是具体候选进入深度审计后的证据矩阵。它们都只保留在 `workspace/evidence/`，不得复制到最终报告。
+本文件定义漏洞审计过程中的内部证据记录。`component-surface.md` 是漏洞族初筛前的 Java Web 组件暴露面表；`component-hits/` 是组件漏洞规则命中；`search-hits/` 是 Query Pack 的硬检索命中；`vulnerability-type-screening.md` 是深度审计前置的漏洞族初筛表；`VULN-CAND-xxx-evidence-matrix.md` 是具体候选进入深度审计后的证据矩阵。它们都只保留在 `workspace/evidence/`，不得复制到最终报告。
 
 ## 文件位置
 
@@ -8,8 +8,12 @@
 
 ```text
 workspace/evidence/component-surface.md
+workspace/evidence/component-hits/index.md
+workspace/evidence/component-hits/<severity>.md
+workspace/evidence/component-hits/manifest.json
 workspace/evidence/search-hits/index.md
 workspace/evidence/search-hits/<slug>.md
+workspace/evidence/search-hits/manifest.json
 workspace/evidence/vulnerability-type-screening.md
 workspace/evidence/VULN-CAND-001-evidence-matrix.md
 workspace/evidence/VULN-CAND-001-related-routes.md
@@ -37,9 +41,26 @@ workspace/evidence/VULN-CAND-001-related-routes.md
 
 `[-]` / `[!]` 行不强制生成候选，但必须写明版本/来源、证据位置或使用点依据，以及处理说明。最终报告前组件表不得保留 `[ ]`。
 
+## 组件漏洞命中
+
+组件漏洞命中在组件表之后、Query Pack 之前运行，输出文件见 `component-vulnerability-hits.md`。命中只表示依赖、JAR/WAR 或部署包版本落入本地 YAML 规则范围，不表示漏洞成立。`component-hits/` 必须由 `run_component_vulnerability_scan.py` 生成，不能手写摘要冒充脚本输出。
+
+`workspace/evidence/component-hits/*.md` 中每条命中必须在最终报告前完成处理：
+
+| 处理状态 | 要求 |
+|---|---|
+| `生成候选` | 必须填写 `VULN-CAND-xxx`，并在漏洞族初筛表和候选证据矩阵中闭环 |
+| `合并候选` | 必须填写被合并的 `VULN-CAND-xxx`，并说明合并依据 |
+| `低价值放弃` | 必须说明为什么不形成候选，例如测试依赖、非运行时依赖、不可达部署条件 |
+| `误报` | 必须说明为什么不是真实组件/版本命中，例如重打包、短 artifact 误匹配、版本解析错误 |
+| `不适用` | 必须说明技术栈、部署形态、scope 或运行条件为何不适用 |
+| `防护阻断` | 必须说明配置、容器边界、鉴权、禁用功能或运行条件的阻断依据 |
+
+`未处理`、`待归类` 或空处理状态只允许作为过程态。组件 CVE/版本命中不得直接写入确认漏洞；必须先映射到漏洞族初筛，再按具体触发面生成候选或写明放弃原因。
+
 ## Query Pack 检索命中
 
-Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `discovery-query-pack.md`。命中只表示存在代码线索，不表示漏洞成立。
+Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `discovery-query-pack.md`，查询规则维护在 `discovery-query-pack.yaml`。命中只表示存在代码线索，不表示漏洞成立。`search-hits/` 必须由 `run_discovery_queries.py` 生成，`manifest.json` 必须记录 YAML 文件来源，不能手写摘要冒充脚本输出。
 
 `workspace/evidence/search-hits/*.md` 中每条命中必须在最终报告前完成处理：
 
@@ -58,7 +79,7 @@ Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `d
 
 ## 漏洞族初筛表
 
-初筛表必须列出 `vulnerability-hypotheses.md` 中的常见 Java 漏洞族，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的关联漏洞族和 `search-hits/` 中 Query Pack 命中。允许在末尾补充项目特有业务漏洞类型。必须逐项检查并完成状态标记后，再进入深度审计。
+初筛表必须列出 `vulnerability-hypotheses.md` 中的常见 Java 漏洞族，并吸收 `component-surface.md` 中 `[x]` / `[?]` 组件映射出的关联漏洞族、`component-hits/` 中的组件漏洞命中和 `search-hits/` 中 Query Pack 命中。允许在末尾补充项目特有业务漏洞类型。必须逐项检查并完成状态标记后，再进入深度审计。
 
 `[x]` 只表示该漏洞族存在候选面或相关证据，需要进入深度审计；不得把它解释为确认漏洞。不要使用“注入类”“文件类”“鉴权类”等过粗合并行替代逐项检查。
 
@@ -117,7 +138,7 @@ Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `d
 - `[?]` 与 `[x]` 的差别只在初筛置信度，不在是否深审；`[?]` 深审后也必须闭环为 `确认`、`降级` 或 `放弃`。
 - `[-]` 和 `[!]` 不强制生成候选，但必须填写初筛依据和下一步/处理说明。
 - 任一 `[x]`/`[?]` 组件或漏洞族缺少候选 ID、缺少对应证据矩阵，或候选矩阵仍停留在 `候选` 状态时，不得生成最终报告。
-- 最终报告前组件表和初筛表都不得保留 `[ ]`，`search-hits/` 不得保留未处理命中。
+- 最终报告前组件表和初筛表都不得保留 `[ ]`，`component-hits/` 和 `search-hits/` 不得保留未处理命中。
 
 ## 证据矩阵模板
 
@@ -157,7 +178,7 @@ Query Pack 在组件表之后、漏洞族初筛之前运行，输出文件见 `d
 python3 skills/java-audit/scripts/validate_evidence_closure.py <workspace>
 ```
 
-校验失败时，必须回到组件识别、Query Pack 命中处理、漏洞族初筛或深度审计补齐候选、证据矩阵或最终状态。该脚本只校验组件表、search hits 和初筛表中的流程闭环，不判断漏洞是否真实成立。
+校验失败时，必须回到组件识别、组件漏洞命中处理、Query Pack 命中处理、漏洞族初筛或深度审计补齐候选、证据矩阵或最终状态。该脚本只校验组件表、component hits、search hits 和初筛表中的流程闭环，不判断漏洞是否真实成立。
 
 ## 同源路由排查模板
 

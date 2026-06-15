@@ -2,9 +2,16 @@
 
 本文件用于漏洞审计中的系统化候选发现。Query Pack 的目标是减少“凭第一眼判断”导致的漏审；它只生成真实代码命中和候选线索，不确认漏洞。
 
+具体查询组和正则维护在 `discovery-query-pack.yaml`，脚本 `scripts/run_discovery_queries.py` 只负责加载 YAML、执行检索、生成 `search-hits/`。新增或调整检索规则时只改 YAML，并先运行：
+
+```bash
+python3 skills/java-audit/scripts/run_discovery_queries.py --validate-queries
+```
+
 ## 使用规则
 
-- 漏洞审计在完成组件暴露面识别后、漏洞族初筛前运行 Query Pack。
+- 漏洞审计在完成组件暴露面识别和组件漏洞命中扫描后、漏洞族初筛前运行 Query Pack。
+- 默认读取 `references/discovery-query-pack.yaml`；需要临时实验规则时可以用 `--queries <yaml>` 指定替代文件，但最终 Skill 规则应回写到默认 YAML。
 - 默认使用 Python 标准库检索源码、反编译产物、业务 JAR/class 解包或反编译后的目录，不依赖 `rg`。
 - 可用 `--engine auto` 在存在 `rg` 时自动使用 `rg` 加速；可用 `--engine rg` 强制使用 `rg`；Windows/macOS/Linux 通用默认值是 `--engine python`。
 - 大型项目可用 `--group <slug>` 只运行部分查询组；用 `--list-groups` 查看所有查询组。分组执行不能替代最终闭环，未运行或未处理的高价值面需要在覆盖限制里说明。
@@ -20,9 +27,12 @@
 ```text
 workspace/evidence/search-hits/index.md
 workspace/evidence/search-hits/<slug>.md
+workspace/evidence/search-hits/manifest.json
 ```
 
-脚本每次运行都会重建 `search-hits/*.md`，该目录表示本次 Query Pack 的快照；不要在其中手写长期证据，长期判断应落到 `vulnerability-type-screening.md` 和 `VULN-CAND-xxx-evidence-matrix.md`。
+脚本每次运行都会重建 `search-hits/*.md` 和 `manifest.json`，该目录表示本次 Query Pack 的快照；不要在其中手写长期证据，长期判断应落到 `vulnerability-type-screening.md` 和 `VULN-CAND-xxx-evidence-matrix.md`。
+
+`manifest.json`、`index.md` 和各 `<slug>.md` 中的生成工具标记、Query Pack 文件路径和 YAML 加载器用于证明 Query Pack 真实执行过。不得手写、伪造或补填 `search-hits/index.md`；如果脚本未运行，必须补跑脚本，而不是手工创建命中摘要。
 
 每条命中至少包含：
 
@@ -37,6 +47,8 @@ workspace/evidence/search-hits/<slug>.md
 ```
 
 ## 查询集
+
+下表是 YAML 查询组索引；正则内容以 `discovery-query-pack.yaml` 为准。
 
 | 查询组 | 主要模式 | 可映射漏洞族 |
 |---|---|---|
@@ -81,5 +93,5 @@ workspace/evidence/search-hits/<slug>.md
 
 - 命中必须先归类，再决定是否生成候选；不要把命中直接写成漏洞。
 - 同一漏洞族下多个独立入口、root cause、sink 或传播链必须拆分为多个候选，或明确合并到已有候选。
-- 一个命中如果由组件表驱动，应同时体现在 `component-surface.md` 和 `vulnerability-type-screening.md`。
+- 一个命中如果由组件表或组件漏洞命中驱动，应同时体现在 `component-surface.md` / `component-hits/` 和 `vulnerability-type-screening.md`。
 - 最终报告前，`search-hits/` 中不得存在 `未处理`、`待归类` 或空处理状态。

@@ -13,6 +13,7 @@
 | 先把 Java 常见漏洞类型列成表逐项过一遍，有候选的再深入审计。 | Java 漏洞审计 + 内部漏洞类型初筛表 + 深度审计 |
 | 按常见 Java 漏洞类型逐项过一遍，只输出真实漏洞。 | Java 漏洞审计 + 漏洞族初筛前置 + 最终只输出确认漏洞 |
 | 先识别这个 Java Web 项目用了哪些组件，再按组件暴露面和漏洞类型审计。 | Java 漏洞审计 + 组件暴露面识别 + 漏洞族初筛 |
+| 先扫描这个 WAR 的 WEB-INF/lib 有没有 Shiro、Fastjson、Log4j、Tomcat 这类组件漏洞命中，再继续确认真实漏洞。 | Java 漏洞审计 + 组件漏洞命中扫描 + 候选闭环 |
 | 先用固定检索把 Java Web 常见危险调用都扫一遍，再只输出确认漏洞。 | Java 漏洞审计 + Query Pack 检索 + 命中闭环 |
 
 ## 反例：不应触发
@@ -32,6 +33,7 @@
 | 这个 JAR 里有个接口疑似任意文件读，帮我确认。 | 触发，先反编译，再按六门槛确认 |
 | 按常见 Java 漏洞类型帮我过一遍，只输出真实存在的漏洞。 | 触发，漏洞类型只作为内部假设库，报告只输出确认漏洞 |
 | 这个项目好像用了 Shiro 和 Fastjson，帮我确认有没有真实漏洞。 | 触发，组件只驱动候选生成，仍按六门槛确认 |
+| 这个项目依赖很多，先按内置 YAML 扫组件 CVE/版本命中，但报告只写真实漏洞。 | 触发，组件规则命中只作为内部候选来源 |
 | 这个项目源码很多，先用固定检索过一遍 SQL、SSRF、XXE、反序列化、文件和命令相关点。 | 触发，作为 Query Pack 检索层，命中不直接等于漏洞 |
 
 ## 失败案例
@@ -56,7 +58,14 @@
 | 组件表中 Fastjson 标记 `[?]`，但没有映射到反序列化/JNDI 等漏洞族候选。 | 不合格，组件 `[x]`/`[?]` 必须映射到漏洞族初筛并生成 `VULN-CAND-xxx` |
 | 组件表仍有 `[ ]` 未检查项就生成最终报告。 | 不合格，组件表和漏洞族初筛表最终都不得保留 `[ ]` |
 | 只因为 `WEB-INF/lib` 中存在 Shiro 或 Fastjson，就把它写成确认漏洞。 | 不合格，组件版本或依赖命中只能作为候选证据，不能替代六门槛 |
+| 未运行组件漏洞命中扫描，就声称已覆盖 Shiro/Fastjson/Log4j/Tomcat 组件风险。 | 不合格，必须运行 `run_component_vulnerability_scan.py` 并生成 `component-hits/index.md` |
+| 没有运行 `run_component_vulnerability_scan.py`，却手写 `component-hits/index.md` 或组件命中摘要。 | 不合格，属于伪造内部证据；必须补跑脚本并以脚本产物为准 |
+| `component-hits` 中存在 Tomcat、Commons FileUpload 或 Fastjson 命中，但处理状态仍是“未处理”。 | 不合格，所有组件命中必须生成候选、合并候选、放弃、误报、不适用或防护阻断 |
+| 组件命中多个 CVE 后只审计最明显一个，其他命中没有合并或放弃理由。 | 不合格，不能走最短路径；每条命中必须闭环处理 |
+| 把 `workspace/evidence/component-hits/` 的命中表复制进最终报告。 | 不合格，组件命中是内部发现层，最终报告不得输出原表 |
 | 未运行 Query Pack 就直接做漏洞族初筛。 | 不合格，漏洞审计必须在组件暴露面后运行硬检索，生成 `search-hits/index.md` |
+| 没有运行 `run_discovery_queries.py`，却手写 `search-hits/index.md` 或命中摘要。 | 不合格，属于伪造内部证据；必须补跑脚本并以脚本产物为准 |
+| 新增 Query Pack 检索模式时直接改 `run_discovery_queries.py` 内置列表，而没有维护 `discovery-query-pack.yaml`。 | 不合格，Query Pack 规则源必须在 YAML，脚本只负责加载和执行 |
 | Query Pack 只检索少量 sink，未覆盖入口、source、传播中间态、框架封装、RPC/MQ、云 SDK 或业务关键词。 | 不合格，固定检索必须服务候选发现，不能只靠几个高危 API |
 | `search-hits` 中存在 SQL、SSRF、XXE 或反序列化命中，但处理状态仍是“未处理”。 | 不合格，所有命中必须生成候选、合并候选、放弃、误报、不适用或防护阻断 |
 | Query Pack 命中了多个 SQL 拼接点，只审计第一个后把整个 SQL 注入族放弃。 | 不合格，同一漏洞族下多个独立入口、root cause、sink 或传播链必须拆分或明确合并 |

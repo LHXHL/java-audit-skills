@@ -2,7 +2,7 @@
 
 本文件用于漏洞审计中的内部组件暴露面识别。组件不是漏洞族，组件命中也不是漏洞确认；它只用于驱动漏洞族初筛和 `VULN-CAND` 候选生成。
 
-固定 Query Pack 查询集放在 `discovery-query-pack.md`。本文件不要求反编译全部第三方依赖；识别组件时优先看依赖清单、`WEB-INF/lib`、配置文件、import、注解、反编译业务代码、shaded 业务包、Query Pack 命中和实际使用点。
+组件漏洞命中扫描见 `component-vulnerability-hits.md`，固定 Query Pack 查询集见 `discovery-query-pack.md`。本文件不要求反编译全部第三方依赖；识别组件时优先看依赖清单、`WEB-INF/lib`、配置文件、import、注解、反编译业务代码、shaded 业务包、组件漏洞命中、Query Pack 命中和实际使用点。
 
 ## 输出文件
 
@@ -89,7 +89,7 @@ workspace/evidence/component-surface.md
 
 ## 处理规则
 
-- 组件表必须在 Query Pack 和漏洞族初筛前完成；它为后续检索解释、漏洞族初筛和候选生成提供证据输入。
+- 组件表必须在组件漏洞命中扫描、Query Pack 和漏洞族初筛前完成；它为后续检索解释、漏洞族初筛和候选生成提供证据输入。
 - 组件 `[x]` / `[?]` 后，对应关联漏洞族必须在 `vulnerability-type-screening.md` 中标为 `[x]` 或 `[?]`，并记录相同的 `VULN-CAND-xxx`。
 - 同一组件发现多个独立入口、根因或传播链时，拆成多个候选。
 - 多个组件指向同一根因时，可以复用同一个候选；最终报告仍按根因归并。
