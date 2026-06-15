@@ -1,114 +1,90 @@
 ---
 name: java-audit
-description: 当用户要求对具体 Java 源码、JAR/WAR、class、反编译产物、模块或 diff 做快速漏洞审计，或要求梳理当前源码的路由信息、接口入口、鉴权机制、权限配置、路由鉴权映射、Java Web 组件暴露面、组件漏洞命中、Query Pack 检索命中并输出报告时使用；需要标准审计工作目录、CFR 反编译、确认漏洞报告、payload 或 BurpSuite 原始 HTTP 请求包时也使用。只做 Java 解释、安全培训、规则编写、报告润色或非 Java 目标时不要使用。
+description: 当用户要求审计 Java 源码、JAR/WAR/class、反编译产物、Java Web 路由或安全发现，并需要 CFR 反编译工具下载/使用、确认漏洞判定标准、安全 Payload 和 BurpSuite 原始 HTTP 请求包证据时使用。仅用于授权 Java 代码审计和防御性安全验证。
 ---
 
-# Java 快速漏洞审计
+# Java 审计
 
-## 定位
+## 1. CFR 反编译工具下载及使用
 
-本 Skill 用于标准化 Java 快速漏洞审计、路由信息梳理和鉴权信息梳理的工程流程、证据门槛和报告格式。它不替代漏洞推理，不提供固定漏洞优先级；默认漏洞审计不把路由枚举当主产物，但用户明确要求路由或鉴权报告时，必须按对应报告任务输出。
+默认使用 CFR 0.152。
 
-## 任务类型
+- 下载地址：`https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar`
+- 保存位置：`<审计工作目录>/tools/cfr-0.152.jar`
+- 反编译输出：统一放到 `<审计工作目录>/decompiled/`，不要覆盖源码目录。
+- 使用策略：有源码时优先审源码；只有 JAR/WAR/class 或缺失关键代码时再反编译。
 
-先判断用户要的是哪类产物：
+下载命令：
 
-- 快速漏洞审计报告：用户要求找漏洞、确认漏洞、payload、BurpSuite 请求包、可利用链路或安全审计结论。
-- 路由信息梳理报告：用户要求“梳理当前源码路由信息”“列出接口入口”“整理 Controller/Servlet/WebService 路由”等。
-- 鉴权信息梳理报告：用户要求“梳理当前源码鉴权信息”“整理权限配置”“分析路由鉴权映射”“说明哪些入口受保护/放行”等。
+```bash
+mkdir -p <审计工作目录>/tools
+curl -L -o <审计工作目录>/tools/cfr-0.152.jar https://xget.xi-xu.me/gh/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar
+```
 
-路由或鉴权报告可以作为独立产物输出；不要因为它不是漏洞审计就切走本 Skill。
+基础用法：
 
-## 首次动作
+```bash
+java -jar <审计工作目录>/tools/cfr-0.152.jar <目标.jar|目标.class> --outputdir <审计工作目录>/decompiled/<目标名>
+```
 
-1. 识别输入类型：源码目录、单模块、JAR/WAR/class、反编译产物、diff 或混合材料。
-2. 在目标项目或用户指定位置创建审计工作目录；若默认目录已存在，必须使用初始化脚本返回的随机前缀新目录，避免多 Agent 写入同一目录。所有工具、反编译结果、临时脚本、日志、证据和报告都必须放入该目录。
-3. 若输入包含 JAR/WAR/class 且没有等价可读源码，调用 `scripts/fetch_cfr.py` 下载 CFR，再调用 `scripts/decompile_with_cfr.py` 通过 CLI 反编译。
-4. 读取 `references/workflow.md`；若是漏洞审计，再读取 `references/evidence-standard.md`、`references/java-web-components.md`、`references/component-vulnerability-hits.md`、`references/discovery-query-pack.md`、`references/vulnerability-hypotheses.md` 和 `references/evidence-matrix.md`。
-5. 若是漏洞审计，第一步必须先梳理鉴权方式、放行规则、过滤器/拦截器/安全配置和路由鉴权映射，再从鉴权面选择审计切入点。
-6. 按任务类型选择报告模板：漏洞审计读 `references/report-template.md`，路由梳理读 `references/route-report-template.md`，鉴权梳理读 `references/auth-report-template.md`。
-7. 生成文件后运行 `scripts/validate_report.py` 做边界检查；路由报告用 `--type route`，鉴权报告用 `--type auth`，漏洞报告用 `--type vuln`。
+WAR 包用法：
 
-## 确认漏洞门槛
+```bash
+java -jar <审计工作目录>/tools/cfr-0.152.jar <目标.war> --analyseas WAR --outputdir <审计工作目录>/decompiled/<目标名>
+```
 
-只有同时满足以下六项，才允许进入“确认漏洞”：
+聚焦包名或类名：
 
-- 可达：存在明确外部入口，例如 HTTP 路由、Servlet、Filter、RPC/WebService 方法或可调用 Web 入口。
-- 可控：能指出用户可控参数、来源、绑定方式和进入业务代码的位置。
-- 可传播：能给出从 source 到 sink 的文件/方法级传播链，中途没有有效拦截、校验、编码或白名单。
-- 可利用：sink 语义确实造成安全影响，并说明现有防护为何不能阻断。
-- 可复现：能给出 payload 和 BurpSuite Repeater 可用的原始 HTTP 请求包。
-- 影响成立：能说明漏洞成功触发后的具体影响。
+```bash
+java -jar <审计工作目录>/tools/cfr-0.152.jar <目标.jar> --jarfilter '<包名或类名正则>' --outputdir <审计工作目录>/decompiled/<目标名>
+```
 
-缺少任一项时，不得写入“确认漏洞”；只能写入“高风险线索 / 下一步人工验证”。
+## 2. 如何判定漏洞有效
 
-## 工作流
+只有同时满足以下标准，才能把发现写成“确认漏洞”：
 
-1. 使用 `scripts/init_audit_workspace.py` 初始化目录，并把输出 JSON 中的 `workspace` 字段作为后续脚本和报告的唯一工作目录路径。
-2. 按输入类型归一化材料：源码优先读源码；字节码先反编译；diff 同时追改动点和受影响调用链。
-3. 若是路由梳理，优先提取真实入口、HTTP 方法、路径、handler、参数、来源文件和覆盖限制，不做漏洞确认。
-4. 若是鉴权梳理，优先提取认证机制、过滤器/拦截器/安全配置、注解权限、放行规则、路由鉴权映射和未确认项，不做漏洞确认。
-5. 若是漏洞审计，先做鉴权起手：确认认证方式、授权位置、放行规则、权限边界和未知项；不要跳过鉴权直接从 sink 开始。
-6. 根据依赖、配置、`WEB-INF/lib`、import、注解、反编译业务代码和实际使用点创建 `workspace/evidence/component-surface.md`，完成 Java Web 组件暴露面识别。
-7. 运行 `scripts/run_component_vulnerability_scan.py --workspace <workspace>`，必要时用 `--source` 指定源码、部署包、`WEB-INF/lib`、JAR/WAR 或依赖目录；输出 `workspace/evidence/component-hits/`，并把每条组件漏洞命中归类处理。
-8. 运行 `scripts/run_discovery_queries.py --workspace <workspace>`，脚本默认读取 `references/discovery-query-pack.yaml`；必要时用 `--source` 指定源码、反编译目录或业务 JAR/class 反编译产物，或用 `--queries` 指定维护后的 YAML；输出 `workspace/evidence/search-hits/`，并把每条命中归类处理。
-9. 根据鉴权面、组件暴露面、组件漏洞命中、Query Pack 命中和代码证据创建 `workspace/evidence/vulnerability-type-screening.md`，将常见 Java 漏洞族逐项列成初筛表并完成状态标记。
-10. 组件表或漏洞族初筛表中的 `[x]` 和 `[?]` 都必须生成至少一个 `VULN-CAND-xxx` 候选并进入深度审计；同一组件、命中点或漏洞族下发现多个独立入口、根因或传播链时，必须拆成多个候选。
-11. 为每个具体候选创建并维护独立证据矩阵，逐项证明入口、参数来源、鉴权方式、sink、传播链、触发条件、payload、BurpSuite 请求包和影响；候选最终状态必须闭环为 `确认`、`降级` 或 `放弃`，不能停留在 `候选`。
-12. 候选满足确认门槛后，排查同源路由；只有逐条严格确认的其他入口才能并入确认漏洞。
-13. 为主确认入口构造完整 payload 与原始 HTTP 请求包；其他确认入口可写最小差异请求摘要。
-14. 生成最终报告前，必须运行 `scripts/validate_evidence_closure.py <workspace>`；任一组件或漏洞族 `[x]`/`[?]` 没有候选、没有证据矩阵或没有闭环状态，存在未处理组件漏洞命中或 Query Pack 命中，或内部表仍有 `[ ]` 时，必须返工，不能出报告。
-15. 生成 Markdown 报告并运行 `scripts/validate_report.py`；校验失败必须返工报告。
+- 可达：存在真实外部入口，例如 HTTP 路由、Servlet、Filter、Controller、RPC、WebService、上传处理入口等。
+- 可控：能指出用户可控参数、参数来源、绑定方式，以及参数进入代码的准确位置。
+- 可传播：存在清晰的 source-to-sink 文件/方法级调用链，且中途没有有效鉴权、校验、编码、白名单或类型约束阻断。
+- 可利用：sink 的语义在当前项目上下文中能造成真实安全影响。
+- 可复现：必须有构造的安全 Payload，并提供可直接放入 BurpSuite Repeater 的原始 HTTP 请求包。
+- 影响成立：能说明触发后产生的越权、泄露、绕过、写入或其他安全影响。
 
-## 子 Agent 使用策略
+任一标准缺失时，只能写为“高风险线索 / 待人工验证”，不得写入“确认漏洞”。
 
-如果当前环境支持创建子 Agent，且目标存在多个模块、大量入口、复杂鉴权链或多个高价值候选，可以用子 Agent 并行收集证据和独立复核。子 Agent 是加速与交叉验证手段，不是漏洞确认的替代品。
+每个确认漏洞必须包含：
 
-创建子 Agent 前必须完成工作目录初始化、输入类型识别、必要反编译、任务类型判断，并为每个子 Agent 写清输入范围、输出文件和验收标准。
+```text
+标题:
+严重等级:
+受影响入口:
+鉴权要求:
+用户可控输入:
+Source-to-sink 调用链:
+Sink:
+防护判断:
+安全 Payload:
+BurpSuite 原始请求包:
+影响:
+证据文件和行号:
+限制说明:
+```
 
-漏洞审计的启动顺序：
+BurpSuite 原始请求包必须完整到可直接粘贴进 Repeater：
 
-1. 先启动鉴权侦查子 Agent，输出认证方式、鉴权位置、放行规则、权限边界和路由鉴权映射。
-2. 鉴权侦查完成后，再按需要启动组件暴露面、路由面、危险面和调用链追踪子 Agent。
-3. 确认漏洞前，可以启动独立 QA 子 Agent 复核六门槛、鉴权字段、payload 和 BurpSuite 原始请求包。
+```http
+POST /<授权测试路径> HTTP/1.1
+Host: <授权测试主机>
+Content-Type: application/x-www-form-urlencoded
+Connection: close
 
-不得在不支持子 Agent 的环境中模拟子 Agent；不得把子 Agent 的线索直接升级为确认漏洞；不得让同一个子 Agent 自己审计、自己质检；不得在鉴权侦查完成前大量启动 sink 追踪任务。
+<参数名>=<安全证明Payload>
+```
 
-## 禁止行为
+## 安全边界
 
-- 不得把关键词、危险依赖、危险 import、sink 命中、组件版本命中或 CVE 规则命中直接写成漏洞。
-- 不得为了“审计出漏洞”编造入口、参数、调用链、payload 或 HTTP 请求。
-- 不得把高风险线索、待验证项、疑似漏洞放入“确认漏洞”章节。
-- 不得在最终报告中输出“漏洞不存在”“已排除漏洞类型”“未发现某类漏洞”等枚举式否定结论；漏洞假设库只供内部推导。
-- 不得把 `workspace/evidence/` 中的组件暴露面表、组件漏洞命中表、Query Pack 命中表、漏洞族初筛表、证据矩阵或被阻断/不可达/证据不足的同源路由复制进最终报告。
-- 不得手写、伪造或补填 `workspace/evidence/component-hits/`；组件漏洞命中必须由 `scripts/run_component_vulnerability_scan.py` 生成，脚本未运行时必须补跑。
-- 不得手写、伪造或补填 `workspace/evidence/search-hits/`；Query Pack 命中必须由 `scripts/run_discovery_queries.py` 生成，脚本未运行时必须补跑。
-- 不得在存在未闭环 `[x]`/`[?]` 组件或漏洞族、未处理组件漏洞命中或 Query Pack 命中时生成最终报告；不能只在内部表标记而不生成候选、不深审或不写降级/放弃原因。
-- 漏洞审计不得跳过鉴权方式梳理直接从 sink 下结论；找不到鉴权代码时写 `未知`，不能默认“无需鉴权”。
-- 不得在路由或鉴权报告中编造不存在的路径、HTTP 方法、权限注解、过滤器规则或放行范围。
-- 不得把 CFR、临时脚本或反编译产物写到项目根目录、全局目录或原源码目录。
-- 不得输出真实生产凭据、真实敏感数据、批量利用脚本、持久化 payload 或破坏性操作。
-
-## References 读取时机
-
-- `references/workflow.md`：开始审计前读取。
-- `references/workspace-contract.md`：创建或检查工作目录前读取。
-- `references/decompile-cfr.md`：遇到 JAR/WAR/class 或需要复用反编译结果时读取。
-- `references/evidence-standard.md`：确认或降级任何漏洞前读取。
-- `references/java-web-components.md`：漏洞审计中需要识别 Java Web 组件暴露面、将组件映射到漏洞族候选时读取。
-- `references/component-vulnerability-hits.md`：漏洞审计中需要扫描依赖、JAR/WAR、`WEB-INF/lib` 或组件 CVE/版本规则命中时读取。
-- `references/discovery-query-pack.md`：漏洞审计中需要运行 Query Pack 检索、归类 search hits、维护 `discovery-query-pack.yaml` 或把命中映射到漏洞族候选时读取。
-- `references/vulnerability-hypotheses.md`：漏洞审计中需要系统生成、筛选或证伪漏洞候选时读取；不得作为报告章节输出。
-- `references/evidence-matrix.md`：漏洞审计中维护漏洞族初筛表、候选证据矩阵、同源路由排查和根因归并时读取。
-- `references/burpsuite-request.md`：编写原始 HTTP 请求包前读取。
-- `references/report-template.md`：生成漏洞审计报告前读取。
-- `references/route-report-template.md`：用户要求路由信息、接口入口、路由清单或源码入口梳理时读取。
-- `references/auth-report-template.md`：用户要求鉴权信息、权限配置、认证授权机制或路由鉴权映射时读取。
-- `references/evals.md`：修改本 Skill 或校准触发边界时读取。
-
-## 停止、确认或切换
-
-- 目标路径不存在、没有 Java 证据或用户没有提供具体审计对象时，停止并要求补充目标。
-- 需要对真实线上目标发包、爆破、批量扫描或执行破坏性 payload 时，必须先确认授权与范围。
-- 用户只要 Java 解释、安全文章、规则库或报告润色时，切换到对应普通任务，不使用本 Skill。
-- 找不到确认漏洞时，明确写“未发现确认漏洞”，并给出高风险线索和下一步人工验证点；不要硬凑漏洞。
+- 不准输出破坏性 Payload。
+- 不准包含删除文件、修改配置、删除/清空/截断数据库、擦除表数据、写入持久化后门、反弹 shell、窃取敏感数据或横向移动的 Payload。
+- 只使用无害证明 Payload，例如只读验证、布尔差异、受控回显标记，或针对非敏感测试记录的越权证明。
+- Host、Cookie、凭据、ID、敏感值默认使用占位符；除非用户明确提供授权测试值。
+- 如果漏洞必须依赖破坏性操作才能证明，只能写为高风险线索，并说明缺失的非破坏性验证路径。
