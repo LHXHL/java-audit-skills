@@ -1,4 +1,4 @@
-# Java Audit Skill
+# Audit Skills
 
 ## 前言
 只做五件事：
@@ -7,7 +7,7 @@
 
 2、组件漏洞扫描
 
-3、CFR 反编译
+3、Java/.NET 语言参考、反编译与反混淆
 
 4、确定漏洞有效性
 
@@ -16,41 +16,44 @@
 
 ## 安装
 
-将本仓库中的 `skills/java-audit/` 整个目录放置到 Cloud 或 Codex 可识别的 `.skills/` 目录下，目录名保持为 `java-audit`：
+将本仓库中的 `skills/audit-skills/` 整个目录放置到 claude 或 codex 可识别的 `.skills/` 目录下；能力范围覆盖 Java、.NET 与 PHP 审计：
 
 ```text
 .skills/
-└── java-audit/
+└── audit-skills/
     ├── SKILL.md
     ├── references/
+    │   ├── java.md
+    │   ├── net.md
+    │   └── java-vulnerability.yaml
     └── scripts/
 ```
 
 ## 使用
-在使用Java Skill的时候，你必须要有强指向性，如：`是否存在SQL注入漏洞?`。
+在使用本 Skill 的时候，你必须要有强指向性，如：`是否存在SQL注入漏洞?`。
 
 ```text
-使用 /java-audit 帮我梳理当前源码的路由信息，输出 Markdown 路由报告。
+使用 /audit-skills 帮我梳理当前源码的路由信息，输出 Markdown 路由报告。
 ```
 
 ```text
-使用 /java-audit 帮我梳理当前源码下的鉴权信息，包括认证机制、权限配置和路由鉴权映射。
+使用 /audit-skills 帮我梳理当前源码下的鉴权信息，包括认证机制、权限配置和路由鉴权映射。
 ```
 
 ```text
-使用 /java-audit 帮我梳理当前源码下的是否存在SQL注入漏洞。
+使用 /audit-skills 帮我梳理当前源码下的是否存在SQL注入漏洞。
 ```
 
 ```text
-使用 /java-audit 帮我梳理当前源码下的是否存在反序列化漏洞。
+使用 /audit-skills 帮我梳理当前源码下的是否存在反序列化漏洞。
 ```
 
 ```text
-使用 /java-audit 帮我梳理当前源码下的是否存在反序列化漏洞，可以使用多Agent形式分配任务进行审计。
+使用 /audit-skills 帮我梳理当前源码下的是否存在反序列化漏洞，可以使用多Agent形式分配任务进行审计。
 ```
 
 ```text
-使用 /java-audit 帮我梳理当前源码下，分析中间件以及组件是否存在路径穿越漏洞。
+使用 /audit-skills 帮我梳理当前源码下，分析中间件以及组件是否存在路径穿越漏洞。
 ```
 
 ## 使用codex配合（推荐）
@@ -68,6 +71,8 @@
 5. 每轮结果必须包含：漏洞类型、风险等级、文件路径、行号、可达路径、触发条件、攻击方式、影响、证据、修复建议、置信度、是否需要动态验证。
 6. 主审计员需要复核 claude 的结果，去重、降噪、排除误报，并把所有单项结果合并成复合审计报告。
 7. 最终报告按严重程度排序，并明确列出：确认漏洞、疑似漏洞、未发现但已覆盖的审计项、审计盲区。
+
+源码地址：/path
 
 权限要求：
 - 默认只允许只读审计。
